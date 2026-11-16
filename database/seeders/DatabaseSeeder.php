@@ -31,7 +31,6 @@ class DatabaseSeeder extends Seeder
             [
                 'name'              => 'Admin',
                 'role'              => 'admin',
-                'commuter_type'     => 'regular',
                 'password'          => '12345678',
                 'email_verified_at' => now(),
             ]
@@ -42,7 +41,6 @@ class DatabaseSeeder extends Seeder
             [
                 'name'              => 'Cashier',
                 'role'              => 'cashier',
-                'commuter_type'     => 'regular',
                 'password'          => '12345678',
                 'email_verified_at' => now(),
             ]

@@ -32,11 +32,11 @@
                     >{{ __('Vehicle Type') }}
                 </flux:navlist.item>
 
-                <flux:navlist.item 
+<!--                 <flux:navlist.item 
                     :href="route('security.card.pricing')" 
                     wire:navigate
                     >{{ __('Card Pricing') }}
-                </flux:navlist.item>
+                </flux:navlist.item> -->
             @endif
 
         </flux:navlist>

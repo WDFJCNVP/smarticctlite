@@ -34,11 +34,11 @@
 </div>
 
     <flux:navbar class="max-lg:hidden font-primary text-nav-item font-light absolute left-1/2 -translate-x-1/2">
-        <flux:navbar.item href="/" wire:navigate>Explore</flux:navbar.item>
+        <!-- <flux:navbar.item href="/" wire:navigate>Explore</flux:navbar.item> -->
         <flux:navbar.item href="{{ route('route') }}" wire:navigate>Routes</flux:navbar.item>
         <flux:navbar.item href="{{ route('live.queue') }}" wire:navigate>Queue</flux:navbar.item>
-        <flux:navbar.item href="{{ route('feed') }}" wire:navigate>Feed</flux:navbar.item>
-        <flux:navbar.item href="{{ route('help.center') }}" wire:navigate>Help</flux:navbar.item>
+        <!-- <flux:navbar.item href="{{ route('feed') }}" wire:navigate>Feed</flux:navbar.item> -->
+        <!-- <flux:navbar.item href="{{ route('help.center') }}" wire:navigate>Help</flux:navbar.item> -->
     </flux:navbar>
 
     <flux:spacer />

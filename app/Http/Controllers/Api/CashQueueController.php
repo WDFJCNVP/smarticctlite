@@ -13,11 +13,8 @@ use App\Models\Queue;
 use App\Models\Vehicle;
 use App\Models\DailyScheduleSlot;
 use App\Models\CashTransaction;
-use App\Models\Notification;
-use App\Models\UserNotification;
 use App\Jobs\ProcessAfterDepart;
 use App\Events\QueuedVehicleEvent;
-use App\Events\NotificationEvent;
 use App\Events\CashTransactionCreated;
 use App\Services\AuditLogsService;
 
@@ -39,23 +36,6 @@ class CashQueueController extends Controller
         return Queue::where('plate_number', $plateNumber)
             ->whereIn('status', ['loading', 'staging'])
             ->exists();
-    }
-
-    private function notifyQueueJoined(int $userId, string $vehicleType, string $plateNumber, string $message): void
-    {
-        $notification = Notification::create([
-            'type'     => 'Queued',
-            'title'    => 'Vehicle Queued',
-            'message'  => $message,
-            'metadata' => json_encode(['plate_number' => $plateNumber, 'vehicle_type' => $vehicleType]),
-        ]);
-
-        UserNotification::create([
-            'notification_id' => $notification->id,
-            'user_id'         => $userId,
-        ]);
-
-        broadcast(new NotificationEvent());
     }
 
     private function activateScheduledVehicle(array $validated, Vehicle $vehicle): array
@@ -134,12 +114,6 @@ class CashQueueController extends Controller
             ProcessAfterDepart::dispatch($myQueue->id)->delay($departsIn);
         }
 
-        $this->notifyQueueJoined(
-            $vehicle->user->id,
-            $vehicle->vehicle_type,
-            $vehicle->plate_number,
-            "Your {$vehicle->vehicle_type} with plate number {$vehicle->plate_number} has joined the queue and is now accepting passengers."
-        );
 
         return [
             'success' => true,
@@ -176,12 +150,6 @@ class CashQueueController extends Controller
                     ->max('slot_position') + 1,
             ]);
 
-            $this->notifyQueueJoined(
-                $userId,
-                $vehicle->vehicle_type,
-                $vehicle->plate_number,
-                "Your {$vehicle->vehicle_type} with plate number {$vehicle->plate_number} has joined the queue for {$validated['destination']}. You'll be notified when it's your turn to load."
-            );
 
             return $queue;
         }
@@ -215,12 +183,6 @@ class CashQueueController extends Controller
             ProcessAfterDepart::dispatch($queue->id)->delay($queue->departs_at);
         }
 
-        $this->notifyQueueJoined(
-            $userId,
-            $vehicle->vehicle_type,
-            $vehicle->plate_number,
-            "Your {$vehicle->vehicle_type} with plate number {$vehicle->plate_number} has joined the queue and is now accepting passengers."
-        );
 
         return $queue;
     }
@@ -241,6 +203,35 @@ class CashQueueController extends Controller
             ]);
 
             $vehicle     = $this->getUserVehicle((int) $validated['vehicle_id']);
+
+            if ((int) $vehicle->user_id !== (int) $validated['operator_id']) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This vehicle does not belong to the selected operator.',
+                ], 422);
+            }
+
+            // The queueing fee is always taken from the route's ticket rate,
+            // never trusted from the request.
+            $queueingFee = (float) ($vehicle->route_list?->operatorTicketRate?->queueing_fee ?? 0);
+
+            if ($queueingFee <= 0) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No queueing fee is set for this vehicle\'s route.',
+                ], 422);
+            }
+
+            if ((float) $validated['amount_received'] < $queueingFee) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Amount received is less than the queueing fee.',
+                ], 422);
+            }
+
+            $validated['amount'] = $queueingFee;
+            $validated['change'] = round((float) $validated['amount_received'] - $queueingFee, 2);
+
             $isScheduled = in_array($vehicle->vehicle_type, ['Bus', 'UV-express']);
 
             if ($isScheduled) {

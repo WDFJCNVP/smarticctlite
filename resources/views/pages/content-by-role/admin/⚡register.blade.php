@@ -1,76 +1,46 @@
 <?php
 
-use Livewire\Attributes\Computed;
 use Livewire\Attributes\Layout;
-use Livewire\Attributes\On;
-use App\Events\RegistrationTapCardEvent;
+use Livewire\Attributes\Computed;
 use Livewire\Component;
-use Illuminate\Support\Str;
 
-use Illuminate\Support\Facades\DB;
-
-use App\Models\User;
-use App\Models\Card;
-use App\Models\Vehicle;
-use App\Models\Terminal;
-use App\Models\Route;
-use App\Models\RouteList;
-use App\Models\OperatorTicketRate;
-
-use App\Mail\WelcomeUserMail;
-use Illuminate\Support\Facades\Mail;
 use Flux\Flux;
 
 use App\Services\UserService;
+use App\Models\RouteList;
+use App\Models\OperatorTicketRate;
 
 new #[Layout('layouts.admin-layout')] class extends Component
 {
     public int $step = 1;
-    public bool $skipped = false;
 
-    public string $role = '';
     public string $first_name = '';
     public string $last_name = '';
-    public string $age;
+    public string $age = '';
     public string $email_address = '';
-    public string $phone_number;
-
-    public string $date_of_birth = '';
-    public string $commuter_type = 'regular';
+    public string $phone_number = '';
     public string $address = '';
-    public string $card_number = '';
-    public string $new_card_id = '';
-
-    public bool $card_focused = true;
-    public string $card_state = 'warn';
-
-    public string $employee_id = '';
-    public string $license_number = '';
-    public string $assigned_route = '';
-    public string $vehicle_plate = '';
-    public string $operator_type = 'Driver';
-    public string $group_number;
 
     public array $vehicles = [
         [
-        'vehicle_type' => '',
-         'plate_number' => '',
-         'group_number' => '',
-         'route' => '',
-         'seat_capacity' => '',
-         'engine_number' => '',
-         'body_number' => '',
-         'chassis_number' => '',
-         'has_franchise' => false,
-         'franchise_expiry_date' => '',
-         ],
+            'vehicle_type' => '',
+            'plate_number' => '',
+            'group_number' => '',
+            'route' => '',
+            'seat_capacity' => '',
+            'engine_number' => '',
+            'body_number' => '',
+            'chassis_number' => '',
+            'has_franchise' => false,
+            'franchise_expiry_date' => '',
+        ],
     ];
 
     public string $house_subd = '';
     public ?int $zone_number = null;
     public string $barangay = '';
     public string $municipality = '';
-    public string $province = '';      // <-- NEW
+    public string $province = '';
 
     protected $validationAttributes = [
         'vehicles.*.seat_capacity'  => 'seat capacity',
@@ -90,9 +60,11 @@ new #[Layout('layouts.admin-layout')] class extends Component
         return OperatorTicketRate::get('vehicle_type');
     }
 
-    public function stepSkipped() {
-        $this->skipped = true;
-        $this->next();
+    #[Computed]
+    public function getRoute()
+    {
+         return RouteList::with('operatorTicketRate')
+            ->get();
     }
 
     public function updated($property)
@@ -112,55 +84,17 @@ new #[Layout('layouts.admin-layout')] class extends Component
             $this->resetValidation($property);
         }
 
-        if (in_array($property, ['house_subd', 'zone_number', 'barangay', 'municipality', 'province'])) {  // ADDED province
+        if (in_array($property, ['house_subd', 'zone_number', 'barangay', 'municipality', 'province'])) {
             $this->resetValidation($property);
         }
     }
 
-    #[On('echo:registration-tap-card,.RegistrationTapCardEvent')]
-    public function getUid($event): void
+    /**
+     * Vehicle types that need a group number (compared case-insensitively).
+     */
+    public function needsGroup(?string $type): bool
     {
-        $this->card_number = trim($event['uid']);
-        $this->new_card_id = $event['id'];
-        $this->card_state  = 'success';
-    }
-
-    public function cardScanned(): void
-    {
-        $this->card_state = $this->card_number !== '' ? 'success' : 'ready';
-    }
-
-    public function clearCard(): void
-    {
-        $this->card_number = '';
-        $this->card_state  = 'ready';
-    }
-
-    public function cardFocused(): void
-    {
-        if ($this->card_state !== 'success') {
-            $this->card_state = 'ready';
-        }
-    }
-
-    public function cardBlurred(): void
-    {
-        if ($this->card_state !== 'success') {
-            $this->card_state = 'warn';
-        }
-    }
-
-    public function refocus(): void
-    {
-        $this->card_state = 'ready';
-        $this->dispatch('focus-rfid-input');
-    }
-
-    #[Computed]
-    public function getRoute()
-    {
-         return RouteList::with('operatorTicketRate')
-            ->get();
+        return in_array(strtolower(trim((string) $type)), ['bus', 'van', 'uv-express', 'uv express'], true);
     }
 
     public function saveAddress(): void
@@ -170,7 +104,7 @@ new #[Layout('layouts.admin-layout')] class extends Component
             'zone_number'  => 'required|integer|min:1|max:20',
             'barangay'     => 'required|string|max:255',
             'municipality' => 'required|string|max:255',
-            'province'     => 'required|string|max:255',    // <-- NEW
+            'province'     => 'required|string|max:255',
         ]);
 
         $parts = array_filter([
@@ -178,7 +112,7 @@ new #[Layout('layouts.admin-layout')] class extends Component
             'Zone ' . $data['zone_number'],
             $data['barangay'],
             $data['municipality'],
-            $data['province'],                             // <-- REPLACED hardcoded
+            $data['province'],
         ]);
 
         $this->address = implode(', ', $parts);
@@ -191,81 +125,57 @@ new #[Layout('layouts.admin-layout')] class extends Component
     {
         $this->resetValidation();
 
+        // Step 1: Operator's info
         if ($this->step === 1) {
-            $this->validate([
-                'role' => 'required|in:commuter,operator'
-            ]);
-        }
-
-        if ($this->step === 2) {
             $this->validate([
                 'first_name'    => 'required|min:2',
                 'last_name'     => 'required|min:2',
-                'email_address' => 'required|email|unique:users,email_address',
+                'email_address' => 'nullable|email|unique:users,email_address',
                 'age'           => 'required|min:2|numeric',
+                'address'       => 'required|min:5',
+                'phone_number'  => 'required|numeric',
             ]);
         }
 
-        if ($this->step === 3) {
-            if ($this->role === 'commuter') {
-                $this->validate([
-                    'address'       => 'required|min:5',
-                    'phone_number'  => 'required|numeric',
-                    'commuter_type' => 'required',
-                ]);
-            } else {
-                $rules = [
-                    'address'                         => 'required|min:5',
-                    'phone_number'                    => 'required|numeric',
-                    'vehicles'                        => 'required|array|min:1',
-                    'vehicles.*.vehicle_type'         => 'required|string',
-                    'vehicles.*.plate_number'         => 'required|unique:vehicles,plate_number',
-                    'vehicles.*.route'                => 'required|string',
-                    'vehicles.*.seat_capacity'        => 'required|integer|min:10|max:50',
-                    'vehicles.*.engine_number'        => 'required|string|min:2',
-                    'vehicles.*.body_number'          => 'required|string|min:2',
-                    'vehicles.*.chassis_number'       => 'required|string|min:2',
-                    'vehicles.*.has_franchise'        => 'required|accepted',
-                    'vehicles.*.franchise_expiry_date' => 'required|date|after:today',
-                ];
+        // Step 2: Vehicle details
+        if ($this->step === 2) {
+            $rules = [
+                'vehicles'                         => 'required|array|min:1',
+                'vehicles.*.vehicle_type'          => 'required|string|max:255',
+                'vehicles.*.plate_number'          => 'required|unique:vehicles,plate_number',
+                'vehicles.*.route'                 => 'required|string|max:255',
+                'vehicles.*.seat_capacity'         => 'required|integer|min:10|max:50',
+                'vehicles.*.engine_number'         => 'required|string|min:2',
+                'vehicles.*.body_number'           => 'required|string|min:2',
+                'vehicles.*.chassis_number'        => 'required|string|min:2',
+                'vehicles.*.has_franchise'         => 'required|accepted',
+                'vehicles.*.franchise_expiry_date' => 'required|date|after:today',
+            ];
 
-                $rules['vehicles.*.group_number'] = [
-                    'required_if:vehicles.*.vehicle_type,Bus,UV-express',
-                    'integer',
-                    'min:1',
-                    'max:2'
-                ];
+            // Group number is required only for Bus / Van (checked per vehicle)
+            foreach ($this->vehicles as $i => $vehicle) {
+                $rules["vehicles.$i.group_number"] = $this->needsGroup($vehicle['vehicle_type'] ?? '')
+                    ? ['required', 'integer', 'min:1', 'max:2']
+                    : ['nullable', 'integer', 'min:1', 'max:2'];
+            }
 
-                try {
-                    $this->validate($rules);
-                } catch (\Illuminate\Validation\ValidationException $e) {
-                    foreach ($e->validator->errors()->keys() as $key) {
-                        if (preg_match('/^vehicles\.(\d+)\./', $key, $m)) {
-                            $idx = (int) $m[1];
-                            if (isset($this->vehicles[$idx]) && $this->vehicleIsComplete($this->vehicles[$idx])) {
-                                $this->dispatch('open-vehicle-modal', index: $idx);
-                            }
-                            break;
+            try {
+                $this->validate($rules);
+            } catch (\Illuminate\Validation\ValidationException $e) {
+                foreach ($e->validator->errors()->keys() as $key) {
+                    if (preg_match('/^vehicles\.(\d+)\./', $key, $m)) {
+                        $idx = (int) $m[1];
+                        if (isset($this->vehicles[$idx]) && $this->vehicleIsComplete($this->vehicles[$idx])) {
+                            $this->dispatch('open-vehicle-modal', index: $idx);
                         }
+                        break;
                     }
-                    throw $e;
                 }
+                throw $e;
             }
         }
 
-        if ($this->step === 4) {
-            if (!$this->skipped) {
-                $this->card_number = strtoupper(trim($this->card_number));
-
-                $this->validate([
-                    'card_number' => ['required', 'string', 'unique:cards,uid'],
-                ], [
-                    'card_number.regex' => 'That doesn\'t look like a valid card tap — expected an 10-character UID. Please tap again.',
-                ]);
-            }
-        }
-
-        if ($this->step < 5) {
+        if ($this->step < 3) {
             $this->step++;
         }
     }
@@ -300,7 +210,8 @@ new #[Layout('layouts.admin-layout')] class extends Component
         }
     }
 
-    public function vehicleIsComplete(array $vehicle): bool {
+    public function vehicleIsComplete(array $vehicle): bool
+    {
         $required = ['vehicle_type', 'plate_number', 'route', 'seat_capacity', 'engine_number', 'body_number', 'chassis_number'];
         foreach ($required as $field) {
             if (!filled($vehicle[$field] ?? null)) {
@@ -312,7 +223,7 @@ new #[Layout('layouts.admin-layout')] class extends Component
             return false;
         }
 
-        if (in_array($vehicle['vehicle_type'] ?? '', ['Bus', 'UV-express'])) {
+        if ($this->needsGroup($vehicle['vehicle_type'] ?? '')) {
             return filled($vehicle['group_number'] ?? null);
         }
 
@@ -321,62 +232,33 @@ new #[Layout('layouts.admin-layout')] class extends Component
 
     public function register(): void
     {
-
-        $rawPassword = Str::password(10, true, true, true, false);
-        $rawPin = null;
-
-        $userBasicInformation = [
-            'name'          => $this->first_name . ' ' . $this->last_name,
+        // Operator record only: no password, no card, no email sent.
+        $operatorInformation = [
+            'name'          => trim($this->first_name . ' ' . $this->last_name),
             'age'           => $this->age,
-            'commuter_type' => $this->role === 'commuter' ? strtolower($this->commuter_type) : null,
             'phone_number'  => $this->phone_number,
             'address'       => $this->address,
-            'email_address' => $this->email_address,
-            'password'      => $rawPassword,
-            'role'          => $this->role,
+            'email_address' => filled($this->email_address) ? $this->email_address : null,
+            'role'          => 'operator',
         ];
 
-        if($this->card_number) {
-
-            $rawPin = str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
-
-            $cardInformation = [
-                'uid'    => $this->card_number,
-                'pin'    => $rawPin,
-                'status' => 'active',
-            ];
-        } else {
-            $cardInformation = [];
-        }
-
         $user = app(UserService::class)->create(
-            $userBasicInformation,
-            $cardInformation,
+            $operatorInformation,
             $this->vehicles,
         );
 
-        if($user) {
-
-            Mail::to($user->email_address)->send(new WelcomeUserMail(
-                $user->name,
-                $user->email_address,
-                $rawPassword,
-                $rawPin
-            ));
-
+        if ($user) {
             Flux::toast(
                 variant: 'success',
-                heading: 'User Registered',
-                duration: 3000, 
-                text: 'User registered successfully. Confirmation email sent to the registered user.'
+                heading: 'Operator Registered',
+                duration: 3000,
+                text: 'Operator registered successfully.'
             );
 
             $this->dispatch('user-registered');
             $this->reset();
             $this->step = 1;
         }
-
-
     }
 
     public function isStepDone(int $s): bool
@@ -393,7 +275,7 @@ new #[Layout('layouts.admin-layout')] class extends Component
     
     {{-- ====== PAGE HEADER (mini-navbar: heading left, notifications right) ====== --}}
     <x-page-header
-        :heading="$this->role ? 'Registration for ' . ucfirst($this->role) : 'Register New User'"
+        heading="Register New Operator"
         class="mb-3"
     >
         {{-- No extra controls – keep it minimal --}}
@@ -411,12 +293,12 @@ new #[Layout('layouts.admin-layout')] class extends Component
             class="order-2 sm:order-1 !font-primary !font-bold !text-light-txt-primary dark:!text-dark-txt-primary"
             style="font-size: var(--text-section-heading)"
         >
-            Add a user
+            Add an operator
         </x-heading>
     </div>
 
     <div class="flex items-center gap-1 mb-6 font-secondary text-timestamp">
-        @foreach([1 => 'Select role', 2 => 'Account info', 3 => 'Details', 4 => 'Card', 5 => 'Confirm'] as $s => $label)
+        @foreach([1 => "Operator's info", 2 => 'Vehicle details', 3 => 'Confirm'] as $s => $label)
             <div class="flex items-center gap-1 {{ $loop->last ? '' : 'flex-1' }}">
                 <div class="flex items-center gap-1.5">
                     <div @class([
@@ -447,66 +329,13 @@ new #[Layout('layouts.admin-layout')] class extends Component
             </div>
         @endforeach
     </div>
-
     @if($step === 1)
-        <flux:radio.group wire:model="role" variant="cards" class="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full">
-            <flux:radio value="commuter" label="Commuter" description="A commuter who rides and tracks transit routes.">
-                <x-slot name="icon"><flux:icon.user class="w-5 h-5" /></x-slot>
-            </flux:radio>
-            <flux:radio value="operator" label="Operator" description="A driver or staff assigned to a route or vehicle.">
-                <x-slot name="icon"><flux:icon.identification class="w-5 h-5" /></x-slot>
-            </flux:radio>
-        </flux:radio.group>
-        <flux:error name="role" />
-    @endif
-
-    @if($step === 2)
         <div class="space-y-4">
             <x-inputs-container>
                 <x-input wire:model.blur="first_name" label="First name" placeholder="e.g. Juan" />
                 <x-input wire:model.blur="last_name"  label="Last name"  placeholder="e.g. dela Cruz" />
-                <x-input wire:model.blur="email_address"   label="Email address" placeholder="juandelacruz@gmail.com" />
-                <x-input wire:model.blur="age"   label="Age" placeholder="e.g. 25" type="number" />
-            </x-inputs-container>
-        </div>
-    @endif
-
-    @if($step === 3 && $role === 'commuter')
-        <div class="space-y-4">
-            <x-inputs-container>
-                <flux:field>
-                    <flux:label class="font-secondary text-table-row font-medium text-light-txt-body dark:text-dark-txt-primary">
-                        Address
-                    </flux:label>
-                    <flux:modal.trigger name="address-modal">
-                        <button
-                            type="button"
-                            class="w-full text-left font-secondary text-table-row bg-light-primary dark:bg-dark-surface text-light-txt-body dark:text-dark-txt-primary border border-light-bd-default dark:border-dark-bd-default rounded-lg px-3 py-2.5 transition-shadow duration-200 focus:outline-none focus:ring-2 focus:ring-secondary/50"
-                        >
-                            @if ($address)
-                                {{ $address }}
-                            @else
-                                <span class="text-light-txt-muted dark:text-dark-txt-muted">Tap to set address</span>
-                            @endif
-                        </button>
-                    </flux:modal.trigger>
-                    <flux:error name="address" />
-                </flux:field>
-
-                <x-input wire:model.blur="phone_number"  type="number" label="Phone number" pattern="[0-9]{10}" placeholder="e.g. 09463637401"/>
-                <x-select wire:model.live="commuter_type" label="Commuter type" size="lg">
-                    <x-select-option>Regular</x-select-option>
-                    <x-select-option>Senior Citizen</x-select-option>
-                    <x-select-option>PWD</x-select-option>
-                    <x-select-option>Student</x-select-option>
-                </x-select>
-            </x-inputs-container>
-        </div>
-    @endif
-
-    @if($step === 3 && $role === 'operator')
-        <div class="space-y-4">
-            <x-inputs-container>
+                <x-input wire:model.blur="email_address" label="Email address (optional)" placeholder="juandelacruz@gmail.com" />
+                <x-input wire:model.blur="age" label="Age" placeholder="e.g. 25" type="number" />
                 <flux:field>
                     <flux:label class="font-secondary text-table-row font-medium text-light-txt-body dark:text-dark-txt-primary">
                         Home Address
@@ -526,8 +355,13 @@ new #[Layout('layouts.admin-layout')] class extends Component
                     <flux:error name="address" />
                 </flux:field>
 
-                <x-input wire:model.blur="phone_number" label="Phone no." placeholder="63+ 912 345 6789"/>
+                <x-input wire:model.blur="phone_number" label="Phone no." placeholder="e.g. 09463637401" />
             </x-inputs-container>
+        </div>
+    @endif
+
+    @if($step === 2)
+        <div class="space-y-4">
 
             <div class="flex items-center justify-between pt-2 pb-1 border-t border-light-bd-default dark:border-dark-bd-default">
                 <div>
@@ -639,7 +473,7 @@ new #[Layout('layouts.admin-layout')] class extends Component
                                 <flux:error name="vehicles.{{ $index }}.route" />
                             </div>
 
-                            @if(in_array($this->vehicles[$index]['vehicle_type'], ['Bus', 'UV-express']))
+                            @if($this->needsGroup($this->vehicles[$index]['vehicle_type']))
                                 <div>
                                     <flux:label class="mb-3 font-secondary text-table-row text-light-txt-body dark:text-dark-txt-primary">Group No.</flux:label>
                                     <flux:select wire:model.live="vehicles.{{ $index }}.group_number" placeholder="Select group for this vehicle..." size="sm">
@@ -750,7 +584,7 @@ new #[Layout('layouts.admin-layout')] class extends Component
                             <flux:error name="vehicles.{{ $index }}.route" />
                         </div>
 
-                        @if(in_array($this->vehicles[$index]['vehicle_type'], ['Bus', 'UV-express']))
+                        @if($this->needsGroup($this->vehicles[$index]['vehicle_type']))
                             <div>
                                 <flux:label class="mb-3 font-secondary text-table-row text-light-txt-body dark:text-dark-txt-primary">Group No.</flux:label>
                                 <flux:select wire:model.live="vehicles.{{ $index }}.group_number" placeholder="Select group for this vehicle..." size="sm">
@@ -809,106 +643,8 @@ new #[Layout('layouts.admin-layout')] class extends Component
         </div>
     @endif
 
-    @if($step === 4)
-        <x-card>
-            <div @class([
-                'flex items-center gap-3 p-4 border-b border-light-bd-default dark:border-dark-bd-default',
-                'bg-info/10 dark:bg-dark-info/10'       => $card_state === 'ready',
-                'bg-success/10 dark:bg-dark-success/10' => $card_state === 'success',
-                'bg-danger/10 dark:bg-dark-danger/10'   => $card_state === 'warn',
-            ])>
-                <div @class([
-                    'w-10 h-10 rounded-full flex items-center justify-center shrink-0',
-                    'bg-info/20 dark:bg-dark-info/20'       => $card_state === 'ready',
-                    'bg-success/20 dark:bg-dark-success/20' => $card_state === 'success',
-                    'bg-danger/20 dark:bg-dark-danger/20'   => $card_state === 'warn',
-                ])>
-                    @if($card_state === 'ready')
-                        <flux:icon name="credit-card" class="w-5 h-5 text-info dark:text-dark-info" />
-                    @elseif($card_state === 'success')
-                        <flux:icon name="check-circle" class="w-5 h-5 text-success dark:text-dark-success" />
-                    @else
-                        <flux:icon name="exclamation-triangle" class="w-5 h-5 text-danger dark:text-dark-danger" />
-                    @endif
-                </div>
 
-                <div class="flex-1 min-w-0">
-                    <p @class([
-                        'font-secondary text-table-row font-medium',
-                        'text-info dark:text-dark-info'       => $card_state === 'ready',
-                        'text-success dark:text-dark-success' => $card_state === 'success',
-                        'text-danger dark:text-dark-danger'   => $card_state === 'warn',
-                    ])>
-                        @if($card_state === 'ready')   Get your RFID card ready
-                        @elseif($card_state === 'success') Card scanned successfully!
-                        @else Input field lost focus
-                        @endif
-                    </p>
-                    <p @class([
-                        'font-secondary text-timestamp',
-                        'text-info dark:text-dark-info'       => $card_state === 'ready',
-                        'text-success dark:text-dark-success' => $card_state === 'success',
-                        'text-danger dark:text-dark-danger'   => $card_state === 'warn',
-                    ])>
-                        @if($card_state === 'ready')
-                            Hold the card near the reader — the number fills in automatically.
-                        @elseif($card_state === 'success')
-                            UID {{ $card_number }} captured. Click × to scan a different card.
-                        @else
-                            Click the input field below to re-focus, then tap the rfid card.
-                        @endif
-                    </p>
-                </div>
-
-                @if($card_state === 'success')
-                    <button wire:click="clearCard"
-                        class="text-light-txt-muted hover:text-light-txt-body dark:text-dark-txt-muted dark:hover:text-dark-txt-primary transition"
-                        aria-label="Clear card">
-                        <flux:icon name="x-mark" class="w-6 h-6" />
-                    </button>
-                @endif
-            </div>
-
-            <div class="p-4">
-                <flux:field>
-                    <flux:label class="font-secondary">Card UID</flux:label>
-                    <div class="relative">
-                        {{-- Real capture field: invisible but focused. Also fed directly by the
-                             RegistrationTapCardEvent broadcast above when a physical reader is
-                             wired in, so typing here is just the keyboard-wedge fallback path. --}}
-                        <x-input
-                            id="rfid-input"
-                            wire:model.live.debounce.200ms="card_number"
-                            name="card_number"
-                            wire:keydown.enter="cardScanned"
-                            wire:focus="cardFocused"
-                            wire:blur="cardBlurred"
-                            autocomplete="off"
-                            autofocus
-                            class="opacity-0 absolute inset-0 w-full h-full cursor-default"
-                        />
-                        <div
-                            class="pointer-events-none rounded-lg border-2 border-dashed p-4 flex items-center justify-center gap-2 transition-colors
-                                {{ $card_state === 'success' ? 'border-success dark:border-dark-success bg-success/5 dark:bg-dark-success/10' : 'border-light-bd-default dark:border-dark-bd-default' }}"
-                        >
-                            @if ($card_state === 'success')
-                                <flux:icon name="check-circle" class="w-5 h-5 text-success dark:text-dark-success shrink-0" />
-                                <p class="font-mono text-base tracking-[0.3em] font-semibold text-light-txt-primary dark:text-dark-txt-primary">
-                                    {{ $card_number }}
-                                </p>
-                            @else
-                                <flux:icon name="wifi" class="w-5 h-5 text-light-txt-muted dark:text-dark-txt-muted shrink-0 animate-pulse" />
-                                <p class="font-secondary text-sm text-light-txt-muted dark:text-dark-txt-muted">Waiting for your tap… please tap only once</p>
-                            @endif
-                        </div>
-                    </div>
-                    <flux:error name="card_number" />
-                </flux:field>
-            </div>
-        </x-card>
-    @endif
-
-    @if($step === 5)
+    @if($step === 3)
         <div class="space-y-4">
             <p class="font-secondary text-timestamp font-medium uppercase tracking-wide text-light-txt-muted dark:text-dark-txt-muted">
                 Review before saving
@@ -926,11 +662,7 @@ new #[Layout('layouts.admin-layout')] class extends Component
                         </span>
                     </div>
                     <div>
-                        @if ($this->role === 'operator')
                             <flux:badge color="blue" size="sm" class="font-secondary text-badge">Operator</flux:badge>
-                        @else
-                            <flux:badge color="yellow" size="sm" class="font-secondary text-badge">Commuter</flux:badge>
-                        @endif
                     </div>
                 </div>
 
@@ -967,35 +699,11 @@ new #[Layout('layouts.admin-layout')] class extends Component
                             <flux:table.cell class="font-secondary">{{ $phone_number }}</flux:table.cell>
                         </flux:table.row>
 
-                        @if($role === 'commuter')
-                            <flux:table.row>
-                                <flux:table.cell class="flex items-center gap-2 font-secondary font-medium text-light-txt-body dark:text-dark-txt-primary">
-                                    <flux:icon.user class="w-4 h-4 text-light-txt-muted dark:text-dark-txt-muted shrink-0" />
-                                    Commuter type
-                                </flux:table.cell>
-                                <flux:table.cell class="font-secondary">{{ $commuter_type }}</flux:table.cell>
-                            </flux:table.row>
-                        @endif
-
-                        <flux:table.row>
-                            <flux:table.cell class="flex items-center gap-2 font-secondary font-medium text-light-txt-body dark:text-dark-txt-primary">
-                                <flux:icon.credit-card class="w-4 h-4 text-light-txt-muted dark:text-dark-txt-muted shrink-0" />
-                                Has card
-                            </flux:table.cell>
-                            <flux:table.cell class="font-secondary">
-                                @if($card_number)
-                                    <flux:badge color="green" size="sm">Yes</flux:badge>
-                                @else
-                                    <flux:badge color="zinc" size="sm">No</flux:badge>
-                                @endif
-                            </flux:table.cell>
-                        </flux:table.row>
                     </flux:table.rows>
                 </flux:table>
             </div>
 
             {{-- Operator vehicles table --}}
-            @if($role === 'operator')
                 <div class="space-y-2 pt-2">
                     <div class="flex items-center justify-between">
                         <div class="flex items-center gap-2">
@@ -1061,11 +769,6 @@ new #[Layout('layouts.admin-layout')] class extends Component
                         </flux:table>
                     </div>
                 </div>
-            @endif
-
-            <x-text class="font-secondary text-timestamp text-light-txt-muted dark:text-dark-txt-muted leading-relaxed">
-                A welcome message with login credentials will be sent to the user's registered email. Please inform the user to check their Gmail accounts.
-            </x-text>
         </div>
     @endif
 
@@ -1074,16 +777,10 @@ new #[Layout('layouts.admin-layout')] class extends Component
         @if($step > 1)
             <flux:button size="sm" variant="ghost" wire:click="back" class="font-secondary">Back</flux:button>
         @endif
-        @if($step < 5)
-            @if ($step === 4 && $this->card_number === '')
-                <flux:button size="sm" variant="primary" wire:click="stepSkipped" class="font-secondary">Skip</flux:button>
-            @else
-                <flux:button size="sm" variant="primary" wire:click="next" class="font-secondary">Continue</flux:button>
-            @endif
+        @if($step < 3)
+            <flux:button size="sm" variant="primary" wire:click="next" class="font-secondary">Continue</flux:button>
         @else
-            <flux:button size="sm" variant="primary" wire:click="register" class="font-secondary">
-                Register this {{ ucfirst($this->role) }}
-            </flux:button>
+            <flux:button size="sm" variant="primary" wire:click="register" class="font-secondary">Register this Operator</flux:button>
         @endif
     </div>
 
@@ -1191,15 +888,4 @@ new #[Layout('layouts.admin-layout')] class extends Component
             </div>
         </div>
     </flux:modal>
-
-    <script>
-        document.addEventListener('livewire:initialized', () => {
-            Livewire.on('focus-rfid-input', () => {
-                setTimeout(() => {
-                    const el = document.getElementById('rfid-input');
-                    if (el) el.focus();
-                }, 50);
-            });
-        });
-    </script>
 </div>

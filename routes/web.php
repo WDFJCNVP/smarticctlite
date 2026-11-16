@@ -21,12 +21,12 @@ Route::livewire('/register', 'pages::public.public-registration')->name('public.
 Route::livewire('/register/setup', 'pages::public.public-registration-setup')->name('registration.setup');
 
 // Public Controller
-Route::controller(PublicController::class)->group(function () {
-    Route::get('/', 'index')->name('explore');
-});
+// Route::controller(PublicController::class)->group(function () {
+//     Route::get('/', 'index')->name('explore');
+// });
 
 // Route::livewire('/', 'pages::welcome')->name('explore');
-Route::livewire('/routes', 'pages::route-page')->name('route');
+Route::livewire('/', 'pages::route-page')->name('route');
 Route::livewire('/feed', 'pages::feed')->name('feed');
 Route::livewire('/queue', 'pages::queue-page')->name('live.queue');
 Route::livewire('/help', 'pages::help-page')->name('help.center');

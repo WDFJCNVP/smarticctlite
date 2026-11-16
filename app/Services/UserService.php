@@ -27,22 +27,16 @@ class UserService
         return User::where('role', 'admin')->first();
     }
 
-    public function create( array $userBasicInformation, array $cardInformation = null, ?array $vehicles = null,): User {
+    public function create(array $userBasicInformation, ?array $vehicles = null): User {
 
-        return DB::transaction(function () use ($userBasicInformation, $cardInformation, $vehicles) {
+        return DB::transaction(function () use ($userBasicInformation, $vehicles) {
 
-            $userBasicInformation['password'] = Hash::make($userBasicInformation['password']);
+            // Lite: operators are records only (no login), so a password is optional.
+            if (!empty($userBasicInformation['password'])) {
+                $userBasicInformation['password'] = Hash::make($userBasicInformation['password']);
+            }
 
             $user = User::create($userBasicInformation);
-
-            if ($cardInformation) {
-
-                if(!empty($cardInformation['pin'])) {
-                    $cardInformation['pin'] = Hash::make($cardInformation['pin']);
-                }
-
-                $user->card()->create($cardInformation);
-            }
 
             if($this->getAdmin()) {
                 $admin = $this->getAdmin();
@@ -60,8 +54,6 @@ class UserService
             }
 
             broadcast(new NotificationEvent());
-
-            $created_vehicle;
 
             if ($userBasicInformation['role'] === 'operator' && !empty($vehicles)) {
                 foreach ($vehicles as $vehicle) {
@@ -241,10 +233,6 @@ class UserService
                 'suspended_by'       => $admin?->id,
             ]);
 
-            if ($user->card) {
-                $user->card->update(['status' => 'suspended']);
-            }
-
             $notification = Notification::create([
                 'type'    => 'Suspension',
                 'title'   => 'Account Suspended',
@@ -288,10 +276,6 @@ class UserService
                 'suspended_at'      => null,
                 'suspended_by'      => null,
             ]);
-
-            if ($user->card) {
-                $user->card->update(['status' => 'active']);
-            }
 
             $notification = Notification::create([
                 'type'    => 'Reinstatement',

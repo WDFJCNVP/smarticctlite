@@ -4,252 +4,125 @@ use Livewire\Component;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Computed;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use App\Models\Queue;
-use App\Models\CashTransaction;
-use App\Models\Card;
-use App\Models\RouteList;
-use App\Models\Vehicle;
 use App\Models\User;
-use App\Models\Notification;
-use App\Models\UserNotification;
 
-use App\Http\Controllers\Api\CardController;
 use App\Http\Controllers\Api\CashQueueController;
-
-use App\Events\NotificationEvent;
-use App\Services\AuditLogsService;
 
 new class extends Component
 {
-    public bool $card_focused = true;
-    public string $card_state = 'ready';
-    public string $card_number = '';
     public string $operator_name = '';
     public string $driver_name = '';
-    public string $operator_tickets_price;
 
+    // Holds the selected vehicle's id (name kept from the original component)
     public $route_list_id;
 
-    public bool $cashMode = false;
     public $cash_operator_id = null;
     public string $operatorSearch = '';
     public $amount_received = null;
-    public bool $showCommuterAlert = false;
     public bool $showInsufficientAmountAlert = false;
 
-    public function queueVehicle() {
+    public function queueVehicle()
+    {
+        if (!$this->selectedOperator) {
+            Flux::toast(
+                variant: 'warning',
+                duration: 4000,
+                heading: 'Missing Operator',
+                text: 'Please search and select an operator first.'
+            );
+            return;
+        }
+
+        if (!$this->selectedVehicle) {
+            Flux::toast(
+                variant: 'warning',
+                duration: 4000,
+                heading: 'Missing Vehicle',
+                text: 'Please choose which vehicle to queue.'
+            );
+            return;
+        }
 
         if (trim($this->driver_name) === '') {
             Flux::toast(
                 variant: 'warning',
                 duration: 4000,
                 heading: 'Missing Driver Name',
-                text: 'Please enter the driver\'s name before queueing this vehicle — earnings can\'t be credited to a driver otherwise.'
+                text: 'Please enter the driver\'s name before queueing this vehicle.'
             );
             return;
         }
 
-        if ($this->cashMode) {
-
-            if (empty($this->amount_received) || $this->amount_received < $this->queueFee) {
-                $this->showInsufficientAmountAlert = true;
-                return;
-            }
-
-            if (!$this->cash_operator_id) {
-                Flux::toast(
-                    variant: 'warning',
-                    duration: 4000,
-                    heading: 'Missing Operator',
-                    text: 'Please select an operator for cash payment.'
-                );
-                return;
-            }
-
-            try {
-                $request = new Request();
-                $request->merge([
-                    'operator_id'     => $this->selectedOperator->id,
-                    'vehicle_id'      => $this->selectedVehicle->id,
-                    'driver_name'     => $this->driver_name ?: $this->selectedVehicle->driver_name,
-                    'amount'          => $this->queueFee,
-                    'amount_received' => $this->amount_received,
-                    'change'          => $this->change,
-                    'destination'     => $this->selectedVehicle->route_list->terminal,
-                    'vehicle_type'    => $this->selectedVehicle->vehicle_type,
-                    'plate_number'    => $this->selectedVehicle->plate_number,
-                ]);
-
-                $response = (new CashQueueController())->queue($request);
-                $responseData = $response->getData(true);
-
-            } catch (\Exception $e) {
-                Log::error('Cash-mode vehicle queueing failed', ['error' => $e->getMessage()]);
-                Flux::toast(
-                    variant: 'warning',
-                    duration: 4000,
-                    heading: 'Failed to Queue Vehicle',
-                    text: 'Something went wrong while queuing this vehicle. Please try again.'
-                );
-                return;
-            }
-
-            if (($responseData['success'] ?? false) === true) {
-                Flux::toast(
-                    variant: 'success',
-                    duration: 4000,
-                    heading: 'Vehicle Queued Successfully',
-                    text: 'Cash payment recorded. Change: ₱' . number_format($this->change, 2)
-                );
-
-                $this->disableCashMode();
-                $this->redirect(route('user.queue'), navigate: true);
-                return;
-            }
-
-            Flux::toast(
-                variant: 'warning',
-                duration: 4000,
-                heading: 'Failed to Queue Vehicle',
-                text: $responseData['message'] ?? 'An error occurred while queuing the vehicle.'
-            );
+        if (empty($this->amount_received) || $this->amount_received < $this->queueFee) {
+            $this->showInsufficientAmountAlert = true;
             return;
         }
 
-        // --- Card mode ---
         try {
-            $fee = $this->selectedVehicle->route_list->operatorTicketRate->queueing_fee ?? $this->queueFee;
-
             $request = new Request();
             $request->merge([
-                'uid'              => $this->card_number,
-                'driver_name'      => $this->driver_name,
-                'vehicle_id'       => $this->selectedVehicle->id,
-                'transaction_type' => 'operator_payment',
-                'amount'           => $this->selectedVehicle->route_list->operatorTicketRate->queueing_fee ?? $this->queueFee,
-                'destination'      => $this->selectedVehicle->route_list->terminal,
-                'vehicle_type'     => $this->selectedVehicle->vehicle_type,
-                'plate_number'     => $this->selectedVehicle->plate_number,
+                'operator_id'     => $this->selectedOperator->id,
+                'vehicle_id'      => $this->selectedVehicle->id,
+                'driver_name'     => $this->driver_name ?: $this->selectedVehicle->driver_name,
+                'amount'          => $this->queueFee,
+                'amount_received' => $this->amount_received,
+                'change'          => $this->change,
+                'destination'     => $this->selectedVehicle->route_list->terminal,
+                'vehicle_type'    => $this->selectedVehicle->vehicle_type,
+                'plate_number'    => $this->selectedVehicle->plate_number,
             ]);
 
-            $response = (new CardController())->tap($request);
+            $response = (new CashQueueController())->queue($request);
             $responseData = $response->getData(true);
         } catch (\Exception $e) {
-            Log::error('Card-mode vehicle queueing failed', ['error' => $e->getMessage(), 'vehicle_id' => $this->selectedVehicle->id ?? null]);
+            Log::error('Vehicle queueing failed', ['error' => $e->getMessage()]);
             Flux::toast(
                 variant: 'warning',
                 duration: 4000,
                 heading: 'Failed to Queue Vehicle',
                 text: 'Something went wrong while queuing this vehicle. Please try again.'
             );
-
             return;
         }
 
-        if ($responseData['success'] === true) {
+        if (($responseData['success'] ?? false) === true) {
             Flux::toast(
                 variant: 'success',
+                duration: 4000,
                 heading: 'Vehicle Queued Successfully',
-                text: $responseData['message']
+                text: 'Queueing fee of ₱' . number_format($this->queueFee, 2) . ' recorded. Change: ₱' . number_format($this->change, 2)
             );
 
-            app(AuditLogsService::class)->create([
-                'user_id' => auth()->id(),
-                'action'  => 'Queued Vehicle',
-                'subject' => 'Vehicle Queued Successfully (Card)',
-                'channel' => 'Web',
-                'metadata' => [
-                    'ip_address' => request()->ip(),
-                    'message'    => "Vehicle was successfully queued (Vehicle ID: {$this->selectedVehicle->id}).",
-                ],
-            ]);
-
-            // 1. Compile card receipt data before clearing card state
-            $cardReceiptData = [
-                'reference_no'    => $responseData['reference_no'] ?? ('CARD-' . now()->format('YmdHis') . '-' . $this->selectedVehicle->id),
-                'date'            => now()->format('m/d/y h:i A'),
-                'operator_name'   => $this->selectedOperator->name,
-                'driver_name'     => $this->driver_name,
-                'plate_number'    => $this->selectedVehicle->plate_number,
-                'vehicle_type'    => $this->selectedVehicle->vehicle_type,
-                'destination'     => $this->selectedVehicle->route_list->terminal ?? 'N/A',
-                'fee'             => $fee,
-                'amount_received' => 0,
-                'change'          => 0,
-                'is_cash'         => false,
-            ];
-
-            // 2. Trigger thermal printing
-            // ThermalReceiptService::printQueueSlip($cardReceiptData);
-
-            // 3. Clear component state
-            $this->clearCard();
-
-            // 4. Redirect to live queue
+            $this->clearForm();
             $this->redirect(route('user.queue'), navigate: true);
             return;
         }
-        else {
-            Flux::toast(
-                variant: 'warning',
-                heading: 'Failed to Queue Vehicle',
-                text: $responseData['message'] ?? 'An error occurred while queuing the vehicle.'
-            );
 
-            app(AuditLogsService::class)->create([
-                'user_id' => auth()->id(),
-                'action'  => 'Failed to Queue Vehicle',
-                'subject' => 'Vehicle Queue Failure',
-                'channel' => 'Web',
-                'metadata' => [
-                    'ip_address' => request()->ip(),
-                    'message' => "{$responseData['message']} (Vehicle ID: {$this->selectedVehicle->id}).",
-                ],
-            ]);
-        }
-    }
-    #[Computed]
-    public function selectedVehicle()
-    {
-        $operator = null;
-
-        if ($this->cashMode && $this->cash_operator_id) {
-            $operator = User::find($this->cash_operator_id);
-        } elseif (!$this->cashMode && $this->cardRecord?->user && $this->cardRecord->user->role === 'operator') {
-            $operator = $this->cardRecord->user;
-        }
-
-        if (!$operator || !$this->route_list_id) {
-            return null;
-        }
-
-        return $operator->vehicles->where('id', $this->route_list_id)->first();
+        Flux::toast(
+            variant: 'warning',
+            duration: 4000,
+            heading: 'Failed to Queue Vehicle',
+            text: $responseData['message'] ?? 'An error occurred while queuing the vehicle.'
+        );
     }
 
     #[Computed]
     public function selectedOperator()
     {
-        if ($this->cashMode && $this->cash_operator_id) {
-            return User::find($this->cash_operator_id);
-        }
-
-        if (!$this->cashMode && $this->cardRecord && $this->cardRecord->user && $this->cardRecord->user->role === 'operator') {
-            return $this->cardRecord->user;
-        }
-
-        return null;
+        return $this->cash_operator_id ? User::find($this->cash_operator_id) : null;
     }
 
     #[Computed]
-    public function cardRecord() {
-        if (empty($this->card_number)) {
+    public function selectedVehicle()
+    {
+        if (!$this->selectedOperator || !$this->route_list_id) {
             return null;
         }
 
-        return Card::with('user.vehicles.route_list.operatorTicketRate')
-            ->where('uid', $this->card_number)
+        return $this->selectedOperator->vehicles()
+            ->with('route_list.operatorTicketRate')
+            ->where('id', $this->route_list_id)
             ->first();
     }
 
@@ -289,10 +162,9 @@ new class extends Component
         return 0;
     }
 
-    // Updated to match working version - pre-fill from vehicle record
+    // Pre-fill from the vehicle's registered driver, but leave it editable
     public function updatedRouteListId()
     {
-        // Pre-fill from the vehicle's registered driver, but leave it editable
         $this->driver_name = $this->selectedVehicle?->driver_name ?? '';
     }
 
@@ -301,6 +173,7 @@ new class extends Component
         $operator = User::find($id);
         if ($operator) {
             $this->cash_operator_id = $id;
+            $this->operator_name = $operator->name;
             $this->operatorSearch = $operator->name;
             $this->route_list_id = null;
             $this->amount_received = null;
@@ -312,115 +185,21 @@ new class extends Component
     {
         if ($this->cash_operator_id) {
             $this->cash_operator_id = null;
+            $this->operator_name = '';
             $this->route_list_id = null;
             $this->amount_received = null;
+            $this->driver_name = '';
         }
     }
 
-    public function updatedCardNumber()
+    public function clearForm(): void
     {
-        $this->card_number = strtoupper(trim($this->card_number));
-
-        $this->route_list_id = null;
-        $this->driver_name = '';
-
-        if (empty($this->card_number)) {
-            return;
-        }
-
-        // A real tap always produces the full 8-character UID in one burst —
-        // don't attempt a lookup on a partial scan.
-        if (!preg_match('/^[0-9A-F]{8}$/', $this->card_number)) {
-            return;
-        }
-
-        if ($this->cardRecord) {
-            if ($this->cardRecord->user->role === 'operator') {
-                $this->operator_name = $this->cardRecord->user->name;
-                $this->card_state = 'success';
-                $this->cashMode = false;
-                $this->cash_operator_id = null;
-                $this->operatorSearch = '';
-            } else {
-                $this->operator_name = '';
-                $this->card_state = 'warn';
-                $this->card_number = '';
-                $this->showCommuterAlert = true;
-            }
-        } else {
-            $this->card_state = 'warn';
-        }
-    }
-
-    public function enableCashMode()
-    {
-        $this->cashMode = true;
-        $this->card_number = '';
-        $this->operator_name = '';
-        $this->card_state = 'ready';
-        $this->cash_operator_id = null;
-        $this->operatorSearch = '';
-        $this->route_list_id = null;
-        $this->driver_name = '';
-        $this->amount_received = null;
-    }
-
-    public function disableCashMode()
-    {
-        $this->cashMode = false;
-        $this->cash_operator_id = null;
-        $this->operatorSearch = '';
-        $this->route_list_id = null;
-        $this->driver_name = '';
-        $this->amount_received = null;
-    }
-
-    public function updatedCashOperatorId()
-    {
-        $this->route_list_id = null;
-        $this->amount_received = null;
-        if ($this->cash_operator_id) {
-            $operator = User::find($this->cash_operator_id);
-            $this->operator_name = $operator ? $operator->name : '';
-        }
-    }
-
-    public function cardScanned(): void
-    {
-        // handled by updatedCardNumber
-    }
-
-    public function clearCard(): void
-    {
-        $this->card_number = '';
         $this->operator_name = '';
         $this->driver_name = '';
         $this->route_list_id = null;
-        $this->card_state = 'ready';
-        $this->cashMode = false;
         $this->cash_operator_id = null;
         $this->operatorSearch = '';
         $this->amount_received = null;
-    }
-
-    public function cardBlurred(): void
-    {
-        if ($this->card_state !== 'success') {
-            $this->card_state = 'warn';
-        }
-    }
-
-    public function cardFocused(): void
-    {
-        if ($this->card_state !== 'success') {
-            $this->card_state = 'ready';
-        }
-    }
-
-    public function refocus(): void
-    {
-        $this->card_state = 'ready';
-        $this->dispatch('focus-rfid-input');
     }
 
     public function render()
@@ -453,185 +232,77 @@ new class extends Component
                 class="!font-primary !font-bold !text-light-txt-primary dark:!text-dark-txt-primary"
                 style="font-size: var(--text-section-heading)"
             >
-                Tap an RFID card to queue an operator's vehicle, or pay with cash.
+                Search an operator, choose the vehicle, and record the queueing fee collected.
             </x-heading>
         </div>
     </div>
 
         <x-card class="!p-0">
-            <div @class([
-                'flex items-center gap-3 p-4 rounded-t-xl border-b',
-                'bg-primary/5 dark:bg-primary/10 border-primary/10 dark:border-primary/20'    => $card_state === 'ready',
-                'bg-success/10 dark:bg-dark-success/10 border-success/20 dark:border-dark-success/20' => $card_state === 'success',
-                'bg-danger/10 dark:bg-dark-danger/10 border-danger/20 dark:border-dark-danger/20'     => $card_state === 'warn',
-            ])>
-                <flux:icon
-                    :name="$card_state === 'success' ? 'check-circle' : ($card_state === 'warn' ? 'exclamation-triangle' : 'credit-card')"
-                    @class([
-                        'w-5 h-5 shrink-0',
-                        'text-primary dark:text-dark-txt-primary'      => $card_state === 'ready',
-                        'text-success dark:text-dark-success'          => $card_state === 'success',
-                        'text-danger dark:text-dark-danger'            => $card_state === 'warn',
-                    ])
-                />
-
+            <div class="flex items-center gap-3 p-4 rounded-t-xl border-b bg-primary/5 dark:bg-primary/10 border-primary/10 dark:border-primary/20">
+                <flux:icon name="banknotes" class="w-5 h-5 shrink-0 text-primary dark:text-dark-txt-primary" />
                 <div class="flex-1 min-w-0">
-                    <p @class([
-                        'font-secondary text-sm font-medium',
-                        'text-light-txt-primary dark:text-dark-txt-primary' => $card_state === 'ready',
-                        'text-success dark:text-dark-success'                => $card_state === 'success',
-                        'text-danger dark:text-dark-danger'                  => $card_state === 'warn',
-                    ])>
-                        @if($card_state === 'ready') Get your RFID card ready
-                        @elseif($card_state === 'success') Card scanned successfully
-                        @else Input field lost focus or invalid card
-                        @endif
-                    </p>
-                    <p @class([
-                        'font-secondary text-xs',
-                        'text-light-txt-muted dark:text-dark-txt-muted' => $card_state === 'ready',
-                        'text-success/80 dark:text-dark-success/80'     => $card_state === 'success',
-                        'text-danger/80 dark:text-dark-danger/80'       => $card_state === 'warn',
-                    ])>
-                        @if($card_state === 'ready')
-                            Hold the card near the reader — the number fills in automatically
-                        @elseif($card_state === 'success')
-                            UID {{ $card_number }} captured
-                        @else
-                            @if ($card_state === 'warn' && $card_number && !$this->cardRecord)
-                                Card not recognized — check it's registered and try again.
-                            @elseif ($card_state === 'warn' && $card_number)
-                                This card does not belong to an operator.
-                            @else
-                                Click the input field below to re‑focus, then tap the card
-                            @endif
-                        @endif
-                    </p>
+                    <p class="font-secondary text-sm font-medium text-light-txt-primary dark:text-dark-txt-primary">Cash queueing</p>
+                    <p class="font-secondary text-xs text-light-txt-muted dark:text-dark-txt-muted">Search the operator, choose the vehicle, then enter the amount received</p>
                 </div>
-
-                @if($card_state === 'success')
-                    <button wire:click="clearCard"
+                @if($cash_operator_id)
+                    <button wire:click="clearForm"
                         class="text-light-txt-muted hover:text-light-txt-primary dark:text-dark-txt-muted dark:hover:text-dark-txt-primary transition shrink-0"
-                        aria-label="Scan a different card">
+                        aria-label="Clear operator">
                         <flux:icon name="x-mark" class="w-5 h-5" />
                     </button>
                 @endif
             </div>
 
-            <div class="p-5 space-y-4">
-                <div class="flex flex-col sm:flex-row sm:items-end gap-4">
-                    <div class="flex-1 min-w-[200px]">
-                        <flux:field>
-                            <flux:label class="font-secondary text-table-row font-medium text-light-txt-body dark:text-dark-txt-primary flex items-center gap-1.5">
-                                <flux:icon name="credit-card" class="w-3.5 h-3.5" />
-                                Card UID
-                            </flux:label>
-                            <div class="relative mt-1">
-                                <input
-                                    type="text"
-                                    id="rfid-input"
-                                    wire:model.live.debounce.200ms="card_number"
-                                    wire:focus="cardFocused"
-                                    wire:blur="cardBlurred"
-                                    autocomplete="off"                   
-                                    autofocus
-                                    :disabled="$cashMode"
-                                    @keydown.enter.prevent
-                                    class="absolute inset-0 w-full h-full opacity-0 cursor-default disabled:cursor-not-allowed"
-                                />
-                                <div
-                                    class="pointer-events-none rounded-lg border-2 border-dashed p-2.5 flex items-center justify-center gap-2 transition-colors
-                                        {{ $card_number ? 'border-success dark:border-dark-success bg-success/5 dark:bg-dark-success/10' : 'border-light-bd-default dark:border-dark-bd-default' }}
-                                        {{ $cashMode ? 'opacity-50' : '' }}"
-                                >
-                                    @if ($card_number)
-                                        <span class="font-mono text-sm tracking-[0.2em] font-semibold text-light-txt-primary dark:text-dark-txt-primary">{{ $card_number }}</span>
+            <div class="p-5">
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <flux:field>
+                        <flux:label class="font-secondary text-table-row font-medium text-light-txt-body dark:text-dark-txt-primary">
+                            Search Operator
+                        </flux:label>
+                        <div class="relative">
+                            <x-input
+                                wire:model.live.debounce.300ms="operatorSearch"
+                                placeholder="Type operator name..."
+                                class="w-full mt-1"
+                                autocomplete="off"
+                                autofocus
+                            />
+                            @if(!empty($this->operatorSearch) && is_null($this->cash_operator_id))
+                                <div class="absolute z-20 w-full mt-1 bg-light-secondary dark:bg-dark-subtle border border-light-bd-strong dark:border-dark-bd-strong rounded-lg shadow-xl max-h-48 overflow-y-auto">
+                                    @if($this->filteredOperators->count())
+                                        @foreach($this->filteredOperators as $op)
+                                            <div
+                                                wire:click="selectOperator({{ $op->id }})"
+                                                class="px-3 py-2 hover:bg-light-subtle dark:hover:bg-dark-primary cursor-pointer font-secondary text-sm text-light-txt-body dark:text-dark-txt-body"
+                                            >
+                                                {{ $op->name }}
+                                            </div>
+                                        @endforeach
                                     @else
-                                        <span class="font-secondary text-sm text-light-txt-muted dark:text-dark-txt-muted">Tap your card on the reader…</span>
+                                        <div class="px-3 py-2 font-secondary text-sm text-light-txt-muted dark:text-dark-txt-muted">No operator found.</div>
                                     @endif
                                 </div>
-                            </div>
-                            @error('card_number')
-                                <flux:error>{{ $message }}</flux:error>
-                            @enderror
-                        </flux:field>
-                    </div>
-                    <div class="shrink-0 flex flex-col gap-1.5 w-full sm:w-auto">
-                        <span class="text-xs invisible select-none hidden sm:block" aria-hidden="true">Actions</span>
-                        <div class="flex items-center mb-1 gap-2 h-9 w-full sm:w-auto">
-                            <flux:button
-                                wire:click="enableCashMode"
-                                variant="ghost"
-                                size="sm"
-                                class="font-secondary w-full sm:w-auto justify-center"
-                                :disabled="$cashMode || $card_state === 'success'"
-                            >
-                                Pay with Cash
-                            </flux:button>
-                            @if($cashMode)
-                                <flux:button
-                                    wire:click="disableCashMode"
-                                    variant="danger"
-                                    size="sm"
-                                    class="font-secondary w-full sm:w-auto justify-center"
-                                >
-                                    Cancel Cash
-                                </flux:button>
                             @endif
                         </div>
-                    </div>
+                    </flux:field>
+
+                    <flux:field>
+                        <flux:label class="font-secondary text-table-row font-medium text-light-txt-body dark:text-dark-txt-primary">
+                            Amount Received
+                        </flux:label>
+                        <div class="relative">
+                            <span class="absolute inset-y-0 left-0 flex items-center pl-3 mt-1 text-light-txt-muted dark:text-dark-txt-muted">₱</span>
+                            <x-input
+                                wire:model.live.debounce.300ms="amount_received"
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                placeholder="0.00"
+                                class="pl-7 mt-1"
+                            />
+                        </div>
+                    </flux:field>
                 </div>
-
-                @if($cashMode)
-                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1 border-t border-light-bd-default dark:border-dark-bd-default">
-                        <flux:field class="pt-4">
-                            <flux:label class="font-secondary text-table-row font-medium text-light-txt-body dark:text-dark-txt-primary">
-                                Search Operator
-                            </flux:label>
-                            <div class="relative">
-                                <x-input
-                                    wire:model.live.debounce.300ms="operatorSearch"
-                                    placeholder="Type operator name..."
-                                    class="w-full mt-1"
-                                    autocomplete="off"
-                                />
-                                @if(!empty($this->operatorSearch) && is_null($this->cash_operator_id))
-                                    <div class="absolute z-20 w-full mt-1 bg-light-secondary dark:bg-dark-subtle border border-light-bd-strong dark:border-dark-bd-strong rounded-lg shadow-xl max-h-48 overflow-y-auto">
-                                        @if($this->filteredOperators->count())
-                                            @foreach($this->filteredOperators as $op)
-                                                <div
-                                                    wire:click="selectOperator({{ $op->id }})"
-                                                    class="px-3 py-2 hover:bg-light-subtle dark:hover:bg-dark-primary cursor-pointer font-secondary text-sm text-light-txt-body dark:text-dark-txt-body"
-                                                >
-                                                    {{ $op->name }}
-                                                </div>
-                                            @endforeach
-                                        @else
-                                            <div class="px-3 py-2 font-secondary text-sm text-light-txt-muted dark:text-dark-txt-muted">No operator found.</div>
-                                        @endif
-                                    </div>
-                                @endif
-                            </div>
-                        </flux:field>
-
-                        <flux:field class="pt-4">
-                            <flux:label class="font-secondary text-table-row font-medium text-light-txt-body dark:text-dark-txt-primary">
-                                Amount Received
-                            </flux:label>
-                            <div class="relative">
-                                <span class="absolute inset-y-0 left-0 flex items-center pl-3 mt-1 text-light-txt-muted dark:text-dark-txt-muted">₱</span>
-                                <x-input
-                                    wire:model.live.debounce.300ms="amount_received"
-                                    type="number"
-                                    step="0.01"
-                                    min="0"
-                                    placeholder="0.00"
-                                    class="pl-7 mt-1"
-                                />
-                            </div>
-                        </flux:field>
-                    </div>
-                @endif
             </div>
         </x-card>
 
@@ -650,7 +321,7 @@ new class extends Component
                             <flux:field>
                                 <flux:label class="font-secondary text-table-row font-medium text-light-txt-body dark:text-dark-txt-primary flex items-center gap-1.5 mb-2">
                                     Operator name
-                                    <span class="text-light-txt-muted dark:text-dark-txt-muted font-normal">&middot; {{ $cashMode ? 'selected' : 'from card' }}</span>
+                                    <span class="text-light-txt-muted dark:text-dark-txt-muted font-normal">&middot; selected</span>
                                 </flux:label>
                                 <div class="flex items-center gap-2 h-9 px-3 rounded-lg bg-light-subtle dark:bg-dark-subtle border border-light-bd-default dark:border-dark-bd-default">
                                     <flux:icon name="user" class="w-3.5 h-3.5 text-light-txt-muted dark:text-dark-txt-muted shrink-0" />
@@ -740,9 +411,8 @@ new class extends Component
                                         <span class="text-light-txt-muted dark:text-dark-txt-muted">Driver</span>
                                         <span class="text-light-txt-body dark:text-dark-txt-body">{{ $driver_name ?: '—' }}</span>
                                     </div>
-                                    @if($cashMode)
                                         <div class="flex items-center justify-between py-1.5">
-                                            <span class="text-light-txt-muted dark:text-dark-txt-muted">Queue fee</span>
+                                            <span class="text-light-txt-muted dark:text-dark-txt-muted">Queueing fee</span>
                                             <span class="font-medium text-light-txt-primary dark:text-dark-txt-primary">₱{{ number_format($this->queueFee, 2) }}</span>
                                         </div>
                                         <div class="flex items-center justify-between py-1.5">
@@ -753,13 +423,6 @@ new class extends Component
                                             <span class="text-light-txt-muted dark:text-dark-txt-muted">Change</span>
                                             <span class="font-semibold text-success dark:text-dark-success">₱{{ number_format($this->change, 2) }}</span>
                                         </div>
-                                    @endif
-                                    <div class="flex items-center justify-between pt-3">
-                                        <span class="text-light-txt-muted dark:text-dark-txt-muted">Tickets price</span>
-                                        <span class="font-semibold text-base text-light-txt-primary dark:text-dark-txt-primary">
-                                            ₱{{ number_format($this->selectedVehicle->route_list?->operatorTicketRate?->queueing_fee ?? 0, 2) }}
-                                        </span>
-                                    </div>
                                 </div>
                             @else
                                 <div class="flex flex-col items-center justify-center py-6 text-center text-light-txt-muted dark:text-dark-txt-muted">
@@ -789,27 +452,10 @@ new class extends Component
                     No operator selected yet.
                 </x-text>
                 <x-text variant="subtle" class="!font-secondary block mt-1" style="font-size: var(--text-timestamp)">
-                    Tap an operator's RFID card, or use "Pay with Cash" to search for one.
+                    Search for an operator above to get started.
                 </x-text>
             </x-card>
         @endif
-
-    <flux:modal wire:model.live="showCommuterAlert" class="max-w-sm">
-        <div class="space-y-4">
-            <div>
-                <flux:heading size="lg">Invalid Card</flux:heading>
-                <flux:subheading>This card belongs to a commuter.</flux:subheading>
-            </div>
-            <x-text variant="subtle" class="!font-secondary block" style="font-size: var(--text-table-row)">
-                Only operator cards can be used for queue payments. Please scan an operator card or use the <strong class="text-light-txt-primary dark:text-dark-txt-primary">Pay with Cash</strong> option.
-            </x-text>
-            <div class="flex justify-end">
-                <flux:button wire:click="$set('showCommuterAlert', false)" variant="primary">
-                    Got it
-                </flux:button>
-            </div>
-        </div>
-    </flux:modal>
 
     <flux:modal wire:model.live="showInsufficientAmountAlert" class="max-w-sm">
         <div class="space-y-4">
@@ -828,14 +474,4 @@ new class extends Component
         </div>
     </flux:modal>
 
-    <script>
-        document.addEventListener('livewire:initialized', () => {
-            Livewire.on('focus-rfid-input', () => {
-                setTimeout(() => {
-                    const el = document.getElementById('rfid-input');
-                    if (el) el.focus();
-                }, 50);
-            });
-        });
-    </script>
 </div>

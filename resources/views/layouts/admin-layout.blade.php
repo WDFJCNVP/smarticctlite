@@ -97,7 +97,7 @@
                     icon="home"
                 >Dashboard</x-dashboard.sidebar-menu.sidebar-item>
 
-                <livewire:pages::feed-sidebar-item />
+                <!-- <livewire:pages::feed-sidebar-item /> -->
                 <x-dashboard.sidebar-menu.sidebar-item
                     href="{{ route('admin.routes') }}"
                     icon="map"
@@ -109,10 +109,10 @@
                     wire:navigate
                 >Queueing</x-dashboard.sidebar-menu.sidebar-item>
 
-                <x-dashboard.sidebar-menu.sidebar-item
+<!--                 <x-dashboard.sidebar-menu.sidebar-item
                     href="{{ route('admin.travel.record') }}"
                     icon="briefcase"
-                >Travel Records</x-dashboard.sidebar-menu.sidebar-item>
+                >Travel Records</x-dashboard.sidebar-menu.sidebar-item> -->
 
                 <x-dashboard.sidebar-menu.sidebar-item
                     href="{{ route('admin.audit.logs') }}"
@@ -125,12 +125,12 @@
                     wire:navigate
                 >Users</x-dashboard.sidebar-menu.sidebar-item>
 
-                <x-dashboard.sidebar-menu.sidebar-item
+<!--                 <x-dashboard.sidebar-menu.sidebar-item
                     href="{{ route('admin.cards') }}"
                     icon="credit-card"
-                >Card</x-dashboard.sidebar-menu.sidebar-item>
+                >Card</x-dashboard.sidebar-menu.sidebar-item>  -->
 
-                <x-dashboard.sidebar-menu.sidebar-item
+<!--                 <x-dashboard.sidebar-menu.sidebar-item
                     href="{{ route('admin.topups') }}"
                     icon="banknotes"
                     wire:navigate
@@ -140,7 +140,7 @@
                     href="{{ route('admin.transactions') }}"
                     icon="currency-dollar"
                     wire:navigate
-                >Transactions</x-dashboard.sidebar-menu.sidebar-item>
+                >Transactions</x-dashboard.sidebar-menu.sidebar-item> -->
             </flux:sidebar.nav>
         </div>
 

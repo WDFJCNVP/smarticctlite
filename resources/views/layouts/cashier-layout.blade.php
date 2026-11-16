@@ -62,13 +62,13 @@
             <div class="border-b border-light-bd-default dark:border-dark-bd-default mx-2 mb-1"></div>
 
             <flux:sidebar.nav class="sidebar-nav-large gap-1 mt-1">
-                <x-dashboard.sidebar-menu.sidebar-item href="{{ route('cashier.dashboard') }}" icon="home">
+<!--                 <x-dashboard.sidebar-menu.sidebar-item href="{{ route('cashier.dashboard') }}" icon="home">
                     Dashboard
-                </x-dashboard.sidebar-menu.sidebar-item>
+                </x-dashboard.sidebar-menu.sidebar-item> -->
 
-                <x-dashboard.sidebar-menu.sidebar-item href="{{ route('feed') }}" icon="squares-2x2">
+<!--                 <x-dashboard.sidebar-menu.sidebar-item href="{{ route('feed') }}" icon="squares-2x2">
                     Feed
-                </x-dashboard.sidebar-menu.sidebar-item>
+                </x-dashboard.sidebar-menu.sidebar-item> -->
 
                 <x-dashboard.sidebar-menu.sidebar-item href="{{ route('route') }}" icon="briefcase">
                     Routes
@@ -78,21 +78,21 @@
                     Queue
                 </x-dashboard.sidebar-menu.sidebar-item>
 
-                <x-dashboard.sidebar-menu.sidebar-item href="{{ route('cashier.fare-payment') }}" icon="ticket">
+<!--                 <x-dashboard.sidebar-menu.sidebar-item href="{{ route('cashier.fare-payment') }}" icon="ticket">
                     Fare Payment
-                </x-dashboard.sidebar-menu.sidebar-item>
+                </x-dashboard.sidebar-menu.sidebar-item> -->
 
                 <x-dashboard.sidebar-menu.sidebar-item href="{{ route('admin.travel.record') }}" icon="clipboard-document-list">
                     Dispatch Log
                 </x-dashboard.sidebar-menu.sidebar-item>
-
+<!-- 
                 <x-dashboard.sidebar-menu.sidebar-item href="{{ route('cashier.transactions') }}" icon="banknotes">
                     Transactions
                 </x-dashboard.sidebar-menu.sidebar-item>
 
                 <x-dashboard.sidebar-menu.sidebar-item href="{{ route('cashier.cards') }}" icon="credit-card">
                     Card Top-up
-                </x-dashboard.sidebar-menu.sidebar-item>
+                </x-dashboard.sidebar-menu.sidebar-item> -->
             </flux:sidebar.nav>
 
             <flux:spacer />

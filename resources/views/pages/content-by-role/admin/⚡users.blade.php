@@ -187,7 +187,7 @@ new  #[Layout('layouts.admin-layout')] class extends Component
 
         <flux:link href="{{ route('admin.register.user') }}" wire:navigate class="w-full sm:w-auto">
             <flux:button variant="primary" icon="plus" size="sm" class="font-secondary w-full sm:w-auto justify-center bg-primary text-white hover:bg-primary-hover dark:bg-secondary dark:text-[var(--color-dark-primary)] dark:hover:bg-secondary-hover">
-                Add user
+                Register Operator
             </flux:button>
         </flux:link>
     </div>
@@ -341,28 +341,11 @@ new  #[Layout('layouts.admin-layout')] class extends Component
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3 mb-5">
         <flux:card class="p-3 sm:p-4">
             <div class="flex items-center gap-1.5 sm:gap-2 mb-1.5">
-                <div class="flex items-center justify-center w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-primary/10 dark:bg-primary/20 shrink-0">
-                    <flux:icon.users class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-primary dark:text-dark-txt-primary" />
-                </div>
-                <x-text class="font-secondary text-xs sm:text-stat-label text-light-txt-muted dark:text-dark-txt-muted">
-                    Total users
-                </x-text>
-            </div>
-            <x-text class="font-primary text-stat-value font-bold text-light-txt-primary dark:text-dark-txt-primary block">
-                {{ $this->getUsers->total() }}
-            </x-text>
-            <x-text class="font-secondary text-xs text-light-txt-muted dark:text-dark-txt-muted">
-                across all roles
-            </x-text>
-        </flux:card>
-
-        <flux:card class="p-3 sm:p-4">
-            <div class="flex items-center gap-1.5 sm:gap-2 mb-1.5">
                 <div class="flex items-center justify-center w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-info/10 dark:bg-dark-info/20 shrink-0">
-                    <flux:icon.truck class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-info dark:text-dark-info" />
+                    <flux:icon.users class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-info dark:text-dark-info" />
                 </div>
                 <x-text class="font-secondary text-xs sm:text-stat-label text-light-txt-muted dark:text-dark-txt-muted">
-                    Operators
+                    Total operators
                 </x-text>
             </div>
             <x-text class="font-primary text-stat-value font-bold text-info dark:text-dark-info block">
@@ -374,6 +357,23 @@ new  #[Layout('layouts.admin-layout')] class extends Component
         </flux:card>
 
         <flux:card class="p-3 sm:p-4">
+            <div class="flex items-center gap-1.5 sm:gap-2 mb-1.5">
+                <div class="flex items-center justify-center w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-primary/10 dark:bg-primary/20 shrink-0">
+                    <flux:icon.truck class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-primary dark:text-dark-txt-primary" />
+                </div>
+                <x-text class="font-secondary text-xs sm:text-stat-label text-light-txt-muted dark:text-dark-txt-muted">
+                    Total vehicles
+                </x-text>
+            </div>
+            <x-text class="font-primary text-stat-value font-bold text-light-txt-primary dark:text-dark-txt-primary block">
+                {{ Vehicle::count() }}
+            </x-text>
+            <x-text class="font-secondary text-xs text-light-txt-muted dark:text-dark-txt-muted">
+                registered vehicles
+            </x-text>
+        </flux:card>
+
+<!--         <flux:card class="p-3 sm:p-4">
             <div class="flex items-center gap-1.5 sm:gap-2 mb-1.5">
                 <div class="flex items-center justify-center w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-success/10 dark:bg-dark-success/20 shrink-0">
                     <flux:icon.credit-card class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-success dark:text-dark-success" />
@@ -405,40 +405,21 @@ new  #[Layout('layouts.admin-layout')] class extends Component
             <x-text class="font-secondary text-xs text-light-txt-muted dark:text-dark-txt-muted">
                 new sign-ups
             </x-text>
-        </flux:card>
+        </flux:card> -->
     </div>
 
     {{-- Filter pills + search --}}
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
-        <div class="flex sm:inline-flex items-center gap-1.5 p-1.5 rounded-lg bg-light-subtle dark:bg-dark-subtle w-full sm:w-fit">
-            @foreach ([
-                ''          => 'All',
-                'commuter'  => 'Commuters',
-                'operator'  => 'Operators',
-            ] as $value => $label)
-                <button
-                    type="button"
-                    wire:click="setRoleFilter('{{ $value }}')"
-                    class="flex-1 sm:flex-none px-5 sm:px-6 py-2 rounded-md font-secondary text-sm sm:text-table-row font-medium text-center transition-colors cursor-pointer
-                        {{ $filtered_role === $value
-                            ? 'bg-light-secondary dark:bg-dark-secondary text-light-txt-primary dark:text-dark-txt-primary shadow-sm'
-                            : 'text-light-txt-muted dark:text-dark-txt-muted hover:text-light-txt-body dark:hover:text-dark-txt-body' }}"
-                >
-                    {{ $label }}
-                </button>
-            @endforeach
-        </div>
-
         <div class="flex flex-col sm:flex-row items-stretch sm:items-center sm:justify-end gap-2 w-full sm:flex-1">
             <flux:select
                 wire:model.live="filtered_status"
                 placeholder="All statuses"
                 class="w-full sm:w-44 font-secondary text-table-row dark:bg-dark-secondary dark:border-dark-bd-default dark:text-dark-txt-primary"
             >
-                <flux:select.option value="">All statuses</flux:select.option>
-                <flux:select.option value="active">Active</flux:select.option>
-                <flux:select.option value="suspended">Suspended</flux:select.option>
-                <flux:select.option value="deleted">Deleted</flux:select.option>
+                <!-- <flux:select.option value="">All statuses</flux:select.option> -->
+                <flux:select.option value="active">Docs Expiring</flux:select.option>
+<!--                 <flux:select.option value="suspended">Suspended</flux:select.option>
+                <flux:select.option value="deleted">Deleted</flux:select.option> -->
             </flux:select>
 
             <div class="w-full sm:flex-1 sm:max-w-md">
@@ -458,8 +439,6 @@ new  #[Layout('layouts.admin-layout')] class extends Component
             <flux:table container:class="md:max-h-160">
                 <flux:table.columns sticky class="bg-light-subtle/50 dark:bg-dark-secondary/50 font-secondary text-nav-label text-light-txt-muted dark:text-dark-txt-muted">
                     <flux:table.column align="center" class="px-3! md:px-4! py-2">User</flux:table.column>
-                    <flux:table.column align="center" class="px-2 md:px-4 py-2">Role</flux:table.column>
-                    <flux:table.column align="center" class="hidden md:table-cell px-2 md:px-4 py-2">ICCT Card</flux:table.column>
                     <flux:table.column align="center" class="hidden lg:table-cell px-2 md:px-4 py-2">Address</flux:table.column>
                     <flux:table.column align="center" class="hidden sm:table-cell px-2 md:px-4 py-2">Joined</flux:table.column>
                     <flux:table.column align="center" class="px-2! md:px-4! py-2">Details</flux:table.column>
@@ -491,24 +470,6 @@ new  #[Layout('layouts.admin-layout')] class extends Component
                                         </span>
                                     </div>
                                 </div>
-                            </flux:table.cell>
-
-                            <flux:table.cell align="center" class="px-2 md:px-4 py-2.5">
-                                @if ($user->role === 'operator')
-                                    <flux:badge color="blue" size="sm" class="font-secondary text-badge text-xs">Operator</flux:badge>
-                                @else
-                                    <flux:badge color="yellow" size="sm" class="font-secondary text-badge text-xs">Commuter</flux:badge>
-                                @endif
-                            </flux:table.cell>
-
-                            <flux:table.cell align="center" class="hidden md:table-cell px-2 md:px-4 py-2.5">
-                                @if ($user->card)
-                                    <span class="font-mono text-xs md:text-table-row text-light-txt-muted dark:text-dark-txt-muted">
-                                        **** **** **** {{ substr($user->card->card_number, -4) }}
-                                    </span>
-                                @else
-                                    <flux:badge color="zinc" size="sm" class="font-secondary text-badge text-xs">Not issued</flux:badge>
-                                @endif
                             </flux:table.cell>
 
                             <flux:table.cell align="center" class="hidden lg:table-cell px-2 md:px-4 py-2.5 font-secondary text-xs md:text-timestamp text-light-txt-muted dark:text-dark-txt-muted max-w-48 truncate">
