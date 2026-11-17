@@ -775,7 +775,7 @@ new #[Layout('layouts.admin-layout')] class extends Component
                     </div>
 
                     {{-- Role and user code (always readonly) --}}
-                    <flux:input
+<!--                     <flux:input
                         label="Role"
                         value="{{ ucfirst($user->role) }}"
                         class="w-full font-secondary opacity-70"
@@ -788,7 +788,7 @@ new #[Layout('layouts.admin-layout')] class extends Component
                         class="w-full font-secondary opacity-70"
                         icon:trailing="lock-closed"
                         readonly
-                    />
+                    /> -->
                 </div>
 
                 <div class="flex flex-col sm:flex-row sm:items-center gap-3 w-full pt-4 dark:border-dark-bd-default">
@@ -809,16 +809,6 @@ new #[Layout('layouts.admin-layout')] class extends Component
                                 class="text-success dark:text-dark-success border-success/30 dark:border-dark-success/30 hover:bg-success/10 dark:hover:bg-dark-success/10 w-full sm:w-auto order-2 sm:order-1"
                                 icon="check-circle"
                             >Reinstate user</flux:button>
-                        </flux:modal.trigger>
-                    @else
-                        <flux:modal.trigger name="suspend-user">
-                            <flux:button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                class="text-warning dark:text-dark-warning border-warning/30 dark:border-dark-warning/30 hover:bg-warning/10 dark:hover:bg-dark-warning/10 w-full sm:w-auto order-2 sm:order-1"
-                                icon="no-symbol"
-                            >Suspend user</flux:button>
                         </flux:modal.trigger>
                     @endif
 

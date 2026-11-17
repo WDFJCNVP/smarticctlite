@@ -4,6 +4,7 @@ use Livewire\Component;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\On;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Str;
 use App\Jobs\ProcessAfterDepart;
 use App\Models\Queue;
 
@@ -11,13 +12,36 @@ new class extends Component {
 
     public string $search = '';
     public string $vehicleType = '';
-
-    // Preferred column order; any other vehicle type is added after these.
-    public array $types = ['Bus', 'UV-express', 'Jeep', 'Multi-cab'];
+    public string $route = '';
 
     public bool $show_dispatch_modal = false;
     public ?int $pendingQueueId = null;
     public string $pendingQueuePlate = '';
+
+    /**
+     * Vehicle type => [destination => fare].
+     * Source: ICCT route/fare sheet.
+     *
+     * The destination keys must match the `destination` values saved in the
+     * queues table (matching is case-insensitive). Any destination that is in
+     * the DB but NOT listed here is still rendered, as an extra route lane
+     * (without a fare), so nothing ever disappears from the board.
+     */
+    protected function routeMap(): array
+    {
+        return [
+            'Bus'        => ['Naga' => 70],
+            'UV-express' => ['Naga' => 100, 'Legazpi' => 170],
+            'Jeep'       => ['Baao' => 20, 'Buhi' => 34, 'Bato' => 35, 'Pili' => 50, 'Mountain-unit' => 70],
+            'Multi-cab'  => ['Nabua' => 15, 'Baao' => 20],
+        ];
+    }
+
+    public function updatedVehicleType(): void
+    {
+        // A route belongs to one vehicle type, so reset it when the type changes.
+        $this->route = '';
+    }
 
     public function confirmDispatch(int $queueId, string $plate): void
     {
@@ -64,14 +88,11 @@ new class extends Component {
         );
     }
 
+    /** All active queue rows (search applied, NOT filtered by type/route). */
     #[Computed]
-    public function columns()
+    public function queues()
     {
-        $grouped = Queue::whereIn('status', ['staging', 'loading'])
-            ->when(
-                $this->vehicleType,
-                fn($q) => $q->where('vehicle_type', $this->vehicleType)
-            )
+        return Queue::whereIn('status', ['staging', 'loading'])
             ->when(
                 $this->search,
                 fn($q) => $q->where(function ($q2) {
@@ -84,19 +105,67 @@ new class extends Component {
             ->orderByRaw("CASE status WHEN 'loading' THEN 1 WHEN 'staging' THEN 2 ELSE 3 END")
             ->orderBy('slot_position')
             ->orderBy('time_queued')
-            ->get()
-            ->groupBy('vehicle_type');
+            ->get();
+    }
 
-        $order = $this->vehicleType
-            ? [$this->vehicleType]
-            : array_values(array_unique(array_merge($this->types, $grouped->keys()->all())));
+    /** Vehicle types for the tab bar: known types first, then any unexpected ones from the DB. */
+    #[Computed]
+    public function tabTypes(): array
+    {
+        return array_values(array_unique(array_merge(
+            array_keys($this->routeMap()),
+            $this->queues->pluck('vehicle_type')->all()
+        )));
+    }
 
-        return collect($order)->mapWithKeys(fn($type) => [$type => $grouped->get($type, collect())]);
+    #[Computed]
+    public function typeCounts()
+    {
+        return $this->queues->countBy('vehicle_type');
+    }
+
+    /**
+     * type => collection of routes:
+     *   ['key' => 'buhi', 'label' => 'Buhi', 'fare' => 34, 'queues' => Collection]
+     */
+    #[Computed]
+    public function board()
+    {
+        $map    = $this->routeMap();
+        $byType = $this->queues->groupBy('vehicle_type');
+        $types  = $this->vehicleType ? [$this->vehicleType] : $this->tabTypes;
+
+        return collect($types)->mapWithKeys(function ($type) use ($map, $byType) {
+            $configured = collect($map[$type] ?? [])->mapWithKeys(
+                fn($fare, $dest) => [strtolower($dest) => ['name' => $dest, 'fare' => $fare]]
+            );
+
+            $byRoute = $byType->get($type, collect())
+                ->groupBy(fn($q) => strtolower(trim($q->destination)));
+
+            $routes = $configured->keys()
+                ->merge($byRoute->keys())
+                ->unique()
+                ->values()
+                ->map(function ($key) use ($configured, $byRoute) {
+                    $cfg    = $configured->get($key);
+                    $queues = $byRoute->get($key, collect())->values();
+
+                    return [
+                        'key'    => $key,
+                        'label'  => Str::headline($cfg['name'] ?? $queues->first()->destination),
+                        'fare'   => $cfg['fare'] ?? null,
+                        'queues' => $queues,
+                    ];
+                });
+
+            return [$type => $routes];
+        });
     }
 
     #[On('echo:vehicle-queue,.QueuedVehicleEvent')]
     public function refreshQueuedVehicleList() {
-        unset($this->columns);
+        unset($this->queues, $this->tabTypes, $this->typeCounts, $this->board);
     }
 
     #[On('echo:trigger-depart-event,.TriggerDepartingEvent')]
@@ -170,159 +239,278 @@ new class extends Component {
         </div>
     @endif
 
-    {{-- Search + filter --}}
-    <div class="flex flex-col sm:flex-row sm:items-center gap-3 mb-6">
-        <div class="flex-1">
-            <flux:input
-                type="text"
-                wire:model.live.debounce.300ms="search"
-                placeholder="Search route, plate or driver..."
-                class="w-full font-secondary text-table-row dark:bg-dark-secondary dark:border-dark-bd-default dark:text-dark-txt-primary"
-                icon="magnifying-glass"
-            />
-        </div>
-        <div class="w-full sm:w-48">
-            <flux:select wire:model.live="vehicleType" class="w-full font-secondary text-table-row dark:bg-dark-secondary dark:border-dark-bd-default dark:text-dark-txt-primary">
-                <flux:select.option value="">All vehicles</flux:select.option>
-                <flux:select.option value="Jeep">Jeep</flux:select.option>
-                <flux:select.option value="Bus">Bus</flux:select.option>
-                <flux:select.option value="Multi-cab">Multi-cab</flux:select.option>
-                <flux:select.option value="UV-express">UV-express</flux:select.option>
-            </flux:select>
+    {{-- Search --}}
+    <div class="mb-4">
+        <flux:input
+            type="text"
+            wire:model.live.debounce.300ms="search"
+            placeholder="Search route, plate or driver..."
+            class="w-full font-secondary text-table-row dark:bg-dark-secondary dark:border-dark-bd-default dark:text-dark-txt-primary"
+            icon="magnifying-glass"
+        />
+    </div>
+
+    {{-- Level 1: vehicle type tabs --}}
+    <div class="-mx-4 px-4 sm:mx-0 sm:px-0 overflow-x-auto pb-1">
+        <div class="flex items-center gap-2 w-max sm:w-auto">
+            @php $totalCount = $this->queues->count(); @endphp
+
+            <button
+                type="button"
+                wire:click="$set('vehicleType', '')"
+                @class([
+                    'inline-flex items-center gap-2 whitespace-nowrap rounded-full px-4 py-2 font-secondary text-sm font-semibold transition',
+                    'bg-primary text-white shadow-sm' => $vehicleType === '',
+                    'bg-light-secondary dark:bg-dark-secondary border border-light-bd-default dark:border-dark-bd-default text-light-txt-body dark:text-dark-txt-body hover:border-primary' => $vehicleType !== '',
+                ])
+            >
+                All vehicles
+                <span @class([
+                    'rounded-full px-2 py-0.5 text-xs tabular-nums',
+                    'bg-white/20' => $vehicleType === '',
+                    'bg-light-subtle dark:bg-dark-subtle' => $vehicleType !== '',
+                ])>{{ $totalCount }}</span>
+            </button>
+
+            @foreach ($this->tabTypes as $type)
+                <button
+                    type="button"
+                    wire:key="tab-{{ $type }}"
+                    wire:click="$set('vehicleType', '{{ $type }}')"
+                    @class([
+                        'inline-flex items-center gap-2 whitespace-nowrap rounded-full px-4 py-2 font-secondary text-sm font-semibold transition',
+                        'bg-primary text-white shadow-sm' => $vehicleType === $type,
+                        'bg-light-secondary dark:bg-dark-secondary border border-light-bd-default dark:border-dark-bd-default text-light-txt-body dark:text-dark-txt-body hover:border-primary' => $vehicleType !== $type,
+                    ])
+                >
+                    {{ $type }}
+                    <span @class([
+                        'rounded-full px-2 py-0.5 text-xs tabular-nums',
+                        'bg-white/20' => $vehicleType === $type,
+                        'bg-light-subtle dark:bg-dark-subtle' => $vehicleType !== $type,
+                    ])>{{ $this->typeCounts->get($type, 0) }}</span>
+                </button>
+            @endforeach
         </div>
     </div>
 
-    {{-- Queue board: one column per vehicle type --}}
-    <div @class([
-        'grid grid-cols-1 gap-4 items-start',
-        'md:grid-cols-2 xl:grid-cols-4' => !$vehicleType,
-        'max-w-xl' => $vehicleType,
-    ])>
-        @foreach ($this->columns as $type => $queues)
-            <div class="flex flex-col gap-3 min-w-0">
+    {{-- Level 2: route chips (only when a single vehicle type is selected) --}}
+    @if ($vehicleType && $this->board->has($vehicleType))
+        <div class="-mx-4 px-4 sm:mx-0 sm:px-0 overflow-x-auto mt-3 pb-1">
+            <div class="flex items-center gap-2 w-max sm:w-auto">
+                <span class="font-secondary text-xs font-semibold uppercase tracking-wide text-light-txt-muted dark:text-dark-txt-muted pr-1">Route</span>
 
-                {{-- Column header --}}
-                <div class="flex items-center justify-between rounded-xl bg-primary px-4 py-2.5">
-                    <h2 class="font-primary text-lg font-bold text-white">{{ $type }}</h2>
-                    <span class="font-secondary text-sm text-white/80">{{ $queues->count() }} in queue</span>
-                </div>
+                <button
+                    type="button"
+                    wire:click="$set('route', '')"
+                    @class([
+                        'whitespace-nowrap rounded-lg px-3 py-1.5 font-secondary text-xs font-semibold transition',
+                        'bg-secondary text-[var(--color-dark-primary)]' => $route === '',
+                        'bg-light-subtle dark:bg-dark-subtle text-light-txt-body dark:text-dark-txt-body hover:bg-light-bd-default dark:hover:bg-dark-bd-default' => $route !== '',
+                    ])
+                >
+                    All routes
+                </button>
 
-                @forelse ($queues as $index => $queue)
-                    @php
-                        $isLoading = $queue->status === 'loading';
-                        $pct = $queue->seat_capacity > 0 ? round(($queue->seat_count / $queue->seat_capacity) * 100) : 0;
-                    @endphp
-
-                    <div
-                        wire:key="queue-{{ $queue->id }}-{{ $queue->departs_at?->timestamp }}-{{ $queue->status }}"
+                @foreach ($this->board[$vehicleType] as $r)
+                    <button
+                        type="button"
+                        wire:key="chip-{{ $r['key'] }}"
+                        wire:click="$set('route', '{{ $r['key'] }}')"
                         @class([
-                            'rounded-2xl p-4',
-                            'border-4 border-success bg-success/5 dark:bg-dark-success/5 shadow-md' => $isLoading,
-                            'border border-light-bd-default dark:border-dark-bd-default bg-light-secondary dark:bg-dark-secondary' => !$isLoading,
+                            'inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-1.5 font-secondary text-xs font-semibold transition',
+                            'bg-secondary text-[var(--color-dark-primary)]' => $route === $r['key'],
+                            'bg-light-subtle dark:bg-dark-subtle text-light-txt-body dark:text-dark-txt-body hover:bg-light-bd-default dark:hover:bg-dark-bd-default' => $route !== $r['key'],
                         ])
                     >
-                        {{-- Top row: position, queue number, status --}}
-                        <div class="flex items-center gap-3">
-                            <div @class([
-                                'flex items-center justify-center w-7 h-7 shrink-0 rounded-full font-secondary text-sm font-bold',
-                                'bg-success text-white' => $isLoading,
-                                'bg-light-subtle dark:bg-dark-subtle text-light-txt-muted dark:text-dark-txt-muted' => !$isLoading,
-                            ])>
-                                {{ $index + 1 }}
-                            </div>
+                        {{ $r['label'] }}
+                        <span class="tabular-nums opacity-70">{{ $r['queues']->count() }}</span>
+                    </button>
+                @endforeach
+            </div>
+        </div>
+    @endif
 
-                            <span class="flex-1 font-mono text-2xl font-extrabold tracking-wide text-light-txt-primary dark:text-dark-txt-primary">
-                                {{ $queue->queue_number }}
-                            </span>
+    {{-- Board: one section per vehicle type, one lane per route --}}
+    <div class="mt-6 space-y-8">
+        @foreach ($this->board as $type => $routes)
+            @php
+                $visible = $route ? $routes->where('key', $route) : $routes;
+                $active  = $visible->filter(fn($r) => $r['queues']->isNotEmpty() || $route);
+                $idle    = $visible->reject(fn($r) => $r['queues']->isNotEmpty() || $route);
+                $typeLoading = $routes->sum(fn($r) => $r['queues']->where('status', 'loading')->count());
+                $typeTotal   = $routes->sum(fn($r) => $r['queues']->count());
+            @endphp
 
-                            @if ($isLoading)
-                                <span class="inline-flex items-center gap-1.5">
-                                    <span class="relative flex h-2 w-2">
-                                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"></span>
-                                        <span class="relative inline-flex rounded-full h-2 w-2 bg-success"></span>
-                                    </span>
-                                    <span class="font-secondary text-xs font-bold uppercase tracking-wide text-success dark:text-dark-success">Loading</span>
-                                </span>
-                            @else
-                                <span class="font-secondary text-xs font-medium uppercase tracking-wide text-light-txt-muted dark:text-dark-txt-muted">Waiting</span>
-                            @endif
-                        </div>
+            <section wire:key="type-{{ $type }}" class="space-y-3">
 
-                        {{-- Plate, driver, destination --}}
-                        <div class="mt-3 flex items-end justify-between gap-3">
-                            <div class="min-w-0">
-                                <div class="font-mono text-lg font-semibold tracking-widest text-light-txt-primary dark:text-dark-txt-primary truncate">
-                                    {{ $queue->plate_number }}
-                                </div>
-                                <div class="font-secondary text-sm text-light-txt-body dark:text-dark-txt-body truncate">
-                                    {{ $queue->driver_name }}
-                                </div>
-                                <div class="font-secondary text-xs text-light-txt-muted dark:text-dark-txt-muted truncate">
-                                    to {{ $queue->destination }}
-                                </div>
-                            </div>
-
-                            {{-- Timer --}}
-                            <div class="shrink-0">
-                                @if ($isLoading && $queue->departs_at)
-                                    <span
-                                        x-data="{
-                                            endTime: {{ $queue->departs_at->timestamp }} * 1000,
-                                            display: '--:--',
-                                            urgent: false,
-                                            intervalId: null,
-                                            init() { this.update(); this.intervalId = setInterval(() => this.update(), 1000); },
-                                            destroy() { clearInterval(this.intervalId); },
-                                            update() {
-                                                const remaining = this.endTime - Date.now();
-                                                if (remaining <= 0) { this.display = '00:00'; this.urgent = false; clearInterval(this.intervalId); return; }
-                                                this.urgent = remaining < 30000;
-                                                const m = String(Math.floor(remaining / 60000)).padStart(2, '0');
-                                                const s = String(Math.floor((remaining % 60000) / 1000)).padStart(2, '0');
-                                                this.display = m + ':' + s;
-                                            }
-                                        }"
-                                        :class="urgent
-                                            ? 'font-mono text-xl font-bold tabular-nums text-danger'
-                                            : 'font-mono text-xl font-bold tabular-nums text-warning'"
-                                        x-text="display"
-                                    ></span>
-                                @else
-                                    <span class="font-mono text-xl font-bold tabular-nums text-light-txt-muted dark:text-dark-txt-muted">--:--</span>
-                                @endif
-                            </div>
-                        </div>
-
-                        {{-- Seats --}}
-                        <div class="mt-3 flex items-center gap-2">
-                            <div class="flex-1 h-1.5 rounded-full bg-light-bd-default dark:bg-dark-bd-default overflow-hidden">
-                                <div class="h-full rounded-full {{ $pct >= 75 ? 'bg-danger' : 'bg-success' }} transition-all" style="width: {{ $pct }}%"></div>
-                            </div>
-                            <span class="font-secondary text-xs tabular-nums text-light-txt-muted dark:text-dark-txt-muted whitespace-nowrap">
-                                {{ $queue->seat_count }}/{{ $queue->seat_capacity }} seats
-                            </span>
-                        </div>
-
-                        {{-- Actions --}}
-                        @if ($isLoading && $this->canManageQueue())
-                            <div class="mt-3 pt-3 border-t border-light-bd-default dark:border-dark-bd-default">
-                                <flux:button
-                                    size="sm"
-                                    variant="primary"
-                                    wire:click="confirmDispatch({{ $queue->id }}, '{{ $queue->plate_number }}')"
-                                    class="w-full font-secondary"
-                                >
-                                    Dispatch
-                                </flux:button>
-                            </div>
-                        @endif
+                {{-- Section header (only in "All vehicles" view; tabs already name the type otherwise) --}}
+                @unless ($vehicleType)
+                    <div class="flex items-center gap-3">
+                        <h2 class="font-primary text-xl font-bold text-light-txt-primary dark:text-dark-txt-primary">{{ $type }}</h2>
+                        <span class="font-secondary text-sm text-light-txt-muted dark:text-dark-txt-muted">
+                            {{ $typeTotal }} in queue
+                            @if ($typeLoading) · <span class="text-success dark:text-dark-success font-semibold">{{ $typeLoading }} loading</span> @endif
+                        </span>
+                        <div class="flex-1 h-px bg-light-bd-default dark:bg-dark-bd-default"></div>
                     </div>
-                @empty
+                @endunless
+
+                {{-- Route lanes (only routes that have vehicles) --}}
+                @if ($active->isNotEmpty())
+                    <div class="grid grid-cols-1 gap-4 items-start sm:grid-cols-[repeat(auto-fill,minmax(18rem,1fr))]">
+                        @foreach ($active as $r)
+                            <div wire:key="lane-{{ $type }}-{{ $r['key'] }}" class="flex flex-col gap-3 min-w-0">
+
+                                {{-- Lane header --}}
+                                <div class="flex items-center justify-between gap-2 rounded-xl bg-primary px-4 py-2.5">
+                                    <div class="min-w-0">
+                                        <h3 class="font-primary text-base font-bold text-white truncate">{{ $r['label'] }}</h3>
+                                        <span class="font-secondary text-xs text-white/80">{{ $r['queues']->count() }} in queue</span>
+                                    </div>
+                                    @if ($r['fare'])
+                                        <span class="shrink-0 rounded-full bg-white/15 px-2.5 py-1 font-secondary text-xs font-bold text-white tabular-nums">
+                                            ₱{{ $r['fare'] }}
+                                        </span>
+                                    @endif
+                                </div>
+
+                                @forelse ($r['queues'] as $index => $queue)
+                                    @php
+                                        $isLoading = $queue->status === 'loading';
+                                        $pct = $queue->seat_capacity > 0 ? round(($queue->seat_count / $queue->seat_capacity) * 100) : 0;
+                                    @endphp
+
+                                    <div
+                                        wire:key="queue-{{ $queue->id }}-{{ $queue->departs_at?->timestamp }}-{{ $queue->status }}"
+                                        @class([
+                                            'rounded-2xl p-4',
+                                            'border-4 border-success bg-success/5 dark:bg-dark-success/5 shadow-md' => $isLoading,
+                                            'border border-light-bd-default dark:border-dark-bd-default bg-light-secondary dark:bg-dark-secondary' => !$isLoading,
+                                        ])
+                                    >
+                                        {{-- Top row: position (within this route), queue number, status --}}
+                                        <div class="flex items-center gap-3">
+                                            <div @class([
+                                                'flex items-center justify-center w-7 h-7 shrink-0 rounded-full font-secondary text-sm font-bold',
+                                                'bg-success text-white' => $isLoading,
+                                                'bg-light-subtle dark:bg-dark-subtle text-light-txt-muted dark:text-dark-txt-muted' => !$isLoading,
+                                            ])>
+                                                {{ $index + 1 }}
+                                            </div>
+
+                                            <span class="flex-1 font-mono text-2xl font-extrabold tracking-wide text-light-txt-primary dark:text-dark-txt-primary">
+                                                {{ $queue->queue_number ?? '#' . $queue->id }}
+                                            </span>
+
+                                            @if ($isLoading)
+                                                <span class="inline-flex items-center gap-1.5">
+                                                    <span class="relative flex h-2 w-2">
+                                                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"></span>
+                                                        <span class="relative inline-flex rounded-full h-2 w-2 bg-success"></span>
+                                                    </span>
+                                                    <span class="font-secondary text-xs font-bold uppercase tracking-wide text-success dark:text-dark-success">Loading</span>
+                                                </span>
+                                            @else
+                                                <span class="font-secondary text-xs font-medium uppercase tracking-wide text-light-txt-muted dark:text-dark-txt-muted">Waiting</span>
+                                            @endif
+                                        </div>
+
+                                        {{-- Plate, driver + timer (route is already in the lane header) --}}
+                                        <div class="mt-3 flex items-end justify-between gap-3">
+                                            <div class="min-w-0">
+                                                <div class="font-mono text-lg font-semibold tracking-widest text-light-txt-primary dark:text-dark-txt-primary truncate">
+                                                    {{ $queue->plate_number }}
+                                                </div>
+                                                <div class="font-secondary text-sm text-light-txt-body dark:text-dark-txt-body truncate">
+                                                    {{ $queue->driver_name }}
+                                                </div>
+                                            </div>
+
+                                            <div class="shrink-0">
+                                                @if ($isLoading && $queue->departs_at)
+                                                    <span
+                                                        x-data="{
+                                                            endTime: {{ $queue->departs_at->timestamp }} * 1000,
+                                                            display: '--:--',
+                                                            urgent: false,
+                                                            intervalId: null,
+                                                            init() { this.update(); this.intervalId = setInterval(() => this.update(), 1000); },
+                                                            destroy() { clearInterval(this.intervalId); },
+                                                            update() {
+                                                                const remaining = this.endTime - Date.now();
+                                                                if (remaining <= 0) { this.display = '00:00'; this.urgent = false; clearInterval(this.intervalId); return; }
+                                                                this.urgent = remaining < 30000;
+                                                                const m = String(Math.floor(remaining / 60000)).padStart(2, '0');
+                                                                const s = String(Math.floor((remaining % 60000) / 1000)).padStart(2, '0');
+                                                                this.display = m + ':' + s;
+                                                            }
+                                                        }"
+                                                        :class="urgent
+                                                            ? 'font-mono text-xl font-bold tabular-nums text-danger'
+                                                            : 'font-mono text-xl font-bold tabular-nums text-warning'"
+                                                        x-text="display"
+                                                    ></span>
+                                                @else
+                                                    <span class="font-mono text-xl font-bold tabular-nums text-light-txt-muted dark:text-dark-txt-muted">--:--</span>
+                                                @endif
+                                            </div>
+                                        </div>
+
+                                        {{-- Seats --}}
+       <!--                                  <div class="mt-3 flex items-center gap-2">
+                                            <div class="flex-1 h-1.5 rounded-full bg-light-bd-default dark:bg-dark-bd-default overflow-hidden">
+                                                <div class="h-full rounded-full {{ $pct >= 75 ? 'bg-danger' : 'bg-success' }} transition-all" style="width: {{ $pct }}%"></div>
+                                            </div>
+                                            <span class="font-secondary text-xs tabular-nums text-light-txt-muted dark:text-dark-txt-muted whitespace-nowrap">
+                                                {{ $queue->seat_count }}/{{ $queue->seat_capacity }} seats
+                                            </span>
+                                        </div> -->
+
+                                        {{-- Actions --}}
+                                        @if ($isLoading && $this->canManageQueue())
+                                            <div class="mt-3 pt-3 border-t border-light-bd-default dark:border-dark-bd-default">
+                                                <flux:button
+                                                    size="sm"
+                                                    variant="primary"
+                                                    wire:click="confirmDispatch({{ $queue->id }}, '{{ $queue->plate_number }}')"
+                                                    class="w-full font-secondary"
+                                                >
+                                                    Dispatch
+                                                </flux:button>
+                                            </div>
+                                        @endif
+                                    </div>
+                                @empty
+                                    <div class="rounded-2xl border-2 border-dashed border-light-bd-strong dark:border-dark-bd-strong px-4 py-8 text-center">
+                                        <span class="font-secondary text-sm text-light-txt-muted dark:text-dark-txt-muted">No vehicles in queue.</span>
+                                    </div>
+                                @endforelse
+                            </div>
+                        @endforeach
+                    </div>
+                @else
                     <div class="rounded-2xl border-2 border-dashed border-light-bd-strong dark:border-dark-bd-strong px-4 py-8 text-center">
                         <span class="font-secondary text-sm text-light-txt-muted dark:text-dark-txt-muted">No vehicles in queue.</span>
                     </div>
-                @endforelse
-            </div>
+                @endif
+
+                {{-- Idle routes: shown as quiet chips instead of empty columns --}}
+                @if ($idle->isNotEmpty() && !$route)
+                    <div class="flex flex-wrap items-center gap-2">
+                        <span class="font-secondary text-xs text-light-txt-muted dark:text-dark-txt-muted">No vehicles on:</span>
+                        @foreach ($idle as $r)
+                            <span
+                                wire:key="idle-{{ $type }}-{{ $r['key'] }}"
+                                class="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-light-bd-strong dark:border-dark-bd-strong px-2.5 py-1 font-secondary text-xs text-light-txt-muted dark:text-dark-txt-muted"
+                            >
+                                {{ $r['label'] }}
+                                @if ($r['fare']) <span class="tabular-nums opacity-70">₱{{ $r['fare'] }}</span> @endif
+                            </span>
+                        @endforeach
+                    </div>
+                @endif
+            </section>
         @endforeach
     </div>
 

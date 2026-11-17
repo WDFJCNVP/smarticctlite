@@ -30,6 +30,7 @@ Route::livewire('/', 'pages::route-page')->name('route');
 Route::livewire('/feed', 'pages::feed')->name('feed');
 Route::livewire('/queue', 'pages::queue-page')->name('live.queue');
 Route::livewire('/help', 'pages::help-page')->name('help.center');
+Route::livewire('/queue/portal', 'pages::queue-portal');
 
 //Session Controller
 Route::controller(SessionUserController::class)->group(function () {

@@ -123,7 +123,7 @@
                     href="{{ route('admin.users') }}"
                     icon="users"
                     wire:navigate
-                >Users</x-dashboard.sidebar-menu.sidebar-item>
+                >Operators</x-dashboard.sidebar-menu.sidebar-item>
 
 <!--                 <x-dashboard.sidebar-menu.sidebar-item
                     href="{{ route('admin.cards') }}"

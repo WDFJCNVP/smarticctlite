@@ -13,12 +13,22 @@ use Illuminate\Support\Carbon;
 use App\Jobs\ProcessAfterDepart;
 use App\Models\Queue;
 use App\Models\Vehicle;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
+use Livewire\WithFileUploads;
+use Livewire\Attributes\Locked;
+use Flux\Flux;
+use PhpOffice\PhpSpreadsheet\IOFactory;
+use PhpOffice\PhpSpreadsheet\Shared\Date as ExcelDate;
+use App\Models\RouteList;
+use App\Models\VehicleGroup;
+use App\Services\AuditLogsService;
 
 
 
 new  #[Layout('layouts.admin-layout')] class extends Component
 {
-    use WithPagination;
+    use WithPagination, WithFileUploads;
 
     public $filtered_role = "";
     public $filtered_status = "";
@@ -156,6 +166,288 @@ new  #[Layout('layouts.admin-layout')] class extends Component
         unset($this->withCardCount);
     }
 
+    // ===================== IMPORT OPERATORS MODAL =====================
+
+    public $importFile;
+
+    #[Locked]
+    public array $importRows = [];
+
+    public function prepareImportModal(): void
+    {
+        $this->reset(['importFile', 'importRows']);
+        $this->resetValidation();
+    }
+
+    public function downloadImportTemplate()
+    {
+        $headings = [
+            'operator_name', 'email_address', 'phone_number', 'address',
+            'vehicle_type', 'route', 'plate_number', 'total_seats', 'group_number',
+            'engine_number', 'body_number', 'chassis_number', 'driver_name',
+            'franchise_expiry_date',
+        ];
+
+        return response()->streamDownload(function () use ($headings) {
+            $out = fopen('php://output', 'w');
+            fputcsv($out, $headings);
+            fputcsv($out, [
+                'Juan Dela Cruz', 'juan@example.com', '09171234567', 'Zone 3, San Roque, Iriga City, Camarines Sur',
+                'Bus', 'Naga', 'ABC-1234', 30, 1,
+                'ENG-12345', 'BODY-12345', 'CH-123456789', 'Pedro Santos',
+                now()->addYear()->format('Y-m-d'),
+            ]);
+            fclose($out);
+        }, 'operators-import-template.csv');
+    }
+
+    public function updatedImportFile(): void
+    {
+        $this->reset('importRows');
+
+        $this->validate([
+            'importFile' => 'required|file|mimes:xlsx,csv,txt|max:5120',
+        ]);
+
+        // Read the file directly with PhpSpreadsheet (installed together with Laravel Excel).
+        // Raw values are kept (dates stay Excel serial numbers), which normalizeImportRow() handles.
+        $spreadsheet = IOFactory::load($this->importFile->getRealPath());
+        $sheetRows = $spreadsheet->getSheet(0)->toArray(null, true, false, false);
+
+        // Row 1 = headings, e.g. "Operator Name" or "operator_name" -> operator_name
+        $headers = array_map(
+            fn ($h) => strtolower(trim(preg_replace('/[^a-z0-9]+/i', '_', trim((string) $h)), '_')),
+            array_shift($sheetRows) ?? []
+        );
+
+        $rows = [];
+        $seenPlates = [];
+
+        foreach ($sheetRows as $index => $cells) {
+            // Skip completely blank rows
+            if (collect($cells)->filter(fn ($v) => filled($v))->isEmpty()) {
+                continue;
+            }
+
+            $raw = [];
+            foreach ($headers as $i => $key) {
+                if ($key !== '') {
+                    $raw[$key] = $cells[$i] ?? null;
+                }
+            }
+
+            $data = $this->normalizeImportRow($raw);
+            $errors = $this->validateImportRow($data, $seenPlates);
+            $seenPlates[] = $data['plate_number'];
+
+            $rows[] = [
+                'line'   => $index + 2, // +1 for 0-index, +1 for the heading row
+                'data'   => $data,
+                'errors' => $errors,
+            ];
+        }
+
+        $this->importRows = $rows;
+    }
+
+    private function normalizeImportRow(array $raw): array
+    {
+        $text = fn ($key) => trim((string) ($raw[$key] ?? ''));
+
+        // Excel turns 09171234567 into the number 9171234567 and drops the leading 0.
+        $phone = preg_replace('/[\s\-]/', '', $text('phone_number'));
+        if (preg_match('/^9\d{9}$/', $phone)) {
+            $phone = '0' . $phone;
+        }
+
+        // Dates may arrive as Excel serial numbers or as text.
+        $dateRaw = $raw['franchise_expiry_date'] ?? null;
+        $date = null;
+        if (is_numeric($dateRaw)) {
+            $date = ExcelDate::excelToDateTimeObject($dateRaw)->format('Y-m-d');
+        } elseif (filled($dateRaw)) {
+            try {
+                $date = Carbon::parse($dateRaw)->format('Y-m-d');
+            } catch (\Throwable $e) {
+                $date = (string) $dateRaw; // fails the "date" rule with a clear message
+            }
+        }
+
+        return [
+            'operator_name'         => $text('operator_name'),
+            'email_address'         => strtolower($text('email_address')),
+            'phone_number'          => $phone,
+            'address'               => $text('address'),
+            'vehicle_type'          => $text('vehicle_type'),
+            'route'                 => $text('route'),
+            'plate_number'          => strtoupper($text('plate_number')),
+            'total_seats'           => $text('total_seats'),
+            'group_number'          => $text('group_number') !== '' ? $text('group_number') : null,
+            'engine_number'         => $text('engine_number'),
+            'body_number'           => $text('body_number'),
+            'chassis_number'        => $text('chassis_number'),
+            'driver_name'           => $text('driver_name') ?: null,
+            'franchise_expiry_date' => $date,
+        ];
+    }
+
+    private function validateImportRow(array $row, array $seenPlates): array
+    {
+        // Same rules as addNewVehicle() so imports and manual entry stay consistent.
+        $validator = Validator::make($row, [
+            'operator_name'         => 'required|string|min:2|max:255',
+            'email_address'         => 'nullable|email|max:255',
+            'phone_number'          => ['required', 'regex:/^09\d{9}$/'],
+            'address'               => 'required|string|min:1',
+            'vehicle_type'          => 'required|string',
+            'route'                 => 'required|string',
+            'plate_number'          => 'required|string|unique:vehicles,plate_number',
+            'total_seats'           => 'required|integer|min:10|max:50',
+            'group_number'          => 'required_if:vehicle_type,Bus,UV-express|nullable|integer|min:1|max:2',
+            'engine_number'         => 'required|string|min:2',
+            'body_number'           => 'required|string|min:2',
+            'chassis_number'        => 'required|string|min:2',
+            'driver_name'           => 'nullable|string|max:100',
+            // Matches manual entry (must be in the future). To allow already-expired
+            // franchises for legacy records, change to 'required|date'.
+            'franchise_expiry_date' => 'required|date|after:today',
+        ]);
+
+        $errors = $validator->errors()->all();
+
+        if ($row['plate_number'] !== '' && in_array($row['plate_number'], $seenPlates, true)) {
+            $errors[] = 'Plate number appears more than once in this file.';
+        }
+
+        $existing = $row['phone_number'] !== ''
+            ? User::where('phone_number', $row['phone_number'])->first()
+            : null;
+
+        if ($existing && $existing->role !== 'operator') {
+            $errors[] = 'This phone number already belongs to a non-operator account.';
+        }
+
+        if (! $existing && $row['email_address'] !== ''
+            && User::where('email_address', $row['email_address'])->exists()) {
+            $errors[] = 'Email address is already used by another user.';
+        }
+
+        if ($row['vehicle_type'] !== '' && $row['route'] !== ''
+            && ! RouteList::whereHas('operatorTicketRate', fn ($q) => $q->where('vehicle_type', $row['vehicle_type']))
+                ->where('terminal', $row['route'])
+                ->exists()) {
+            $errors[] = "No route \"{$row['route']}\" exists for vehicle type \"{$row['vehicle_type']}\".";
+        }
+
+        return $errors;
+    }
+
+    #[Computed]
+    public function importValidCount(): int
+    {
+        return collect($this->importRows)->filter(fn ($r) => empty($r['errors']))->count();
+    }
+
+    #[Computed]
+    public function importInvalidCount(): int
+    {
+        return count($this->importRows) - $this->importValidCount;
+    }
+
+    public function confirmImport(): void
+    {
+        $valid = collect($this->importRows)
+            ->filter(fn ($r) => empty($r['errors']))
+            ->pluck('data');
+
+        if ($valid->isEmpty()) {
+            return;
+        }
+
+        $operatorsCreated = 0;
+        $vehiclesCreated  = 0;
+
+        DB::transaction(function () use ($valid, &$operatorsCreated, &$vehiclesCreated) {
+            foreach ($valid->groupBy('phone_number') as $phone => $rows) {
+                $first = $rows->first();
+
+                $operator = User::where('phone_number', $phone)->first();
+
+                if (! $operator) {
+                    $operator = User::create([
+                        'name'          => $first['operator_name'],
+                        'email_address' => $first['email_address'] ?: null,
+                        'phone_number'  => $phone,
+                        'address'       => $first['address'],
+                        'role'          => 'operator',
+                        // No password: operators are records only and cannot log in.
+                    ]);
+                    $operatorsCreated++;
+                }
+
+                foreach ($rows as $row) {
+                    $routeList = RouteList::whereHas('operatorTicketRate',
+                            fn ($q) => $q->where('vehicle_type', $row['vehicle_type']))
+                        ->where('terminal', $row['route'])
+                        ->first();
+
+                    $vehicle = $operator->vehicles()->create([
+                        'route_list_id'         => $routeList->id,
+                        'vehicle_type'          => $row['vehicle_type'],
+                        'plate_number'          => $row['plate_number'],
+                        'total_seats'           => (int) $row['total_seats'],
+                        'engine_number'         => $row['engine_number'],
+                        'body_number'           => $row['body_number'],
+                        'chassis_number'        => $row['chassis_number'],
+                        'driver_name'           => $row['driver_name'],
+                        'has_franchise'         => true,
+                        'franchise_expiry_date' => $row['franchise_expiry_date'],
+                    ]);
+
+                    if (in_array($row['vehicle_type'], ['Bus', 'UV-express']) && $row['group_number'] !== null) {
+                        $order = VehicleGroup::where('group_number', (int) $row['group_number'])
+                            ->whereHas('vehicle', fn ($q) => $q->where('vehicle_type', $vehicle->vehicle_type))
+                            ->max('order_number') + 1;
+
+                        $vehicle->vehicle_group()->create([
+                            'group_number' => (int) $row['group_number'],
+                            'order_number' => $order,
+                        ]);
+                    }
+
+                    $vehiclesCreated++;
+                }
+            }
+
+            // One summary log entry per import, not one per row.
+            app(AuditLogsService::class)->create([
+                'user_id'  => auth()->id(),
+                'action'   => 'Operators Imported',
+                'subject'  => 'Admin imported operators and vehicles from a spreadsheet',
+                'channel'  => 'Web',
+                'metadata' => [
+                    'ip_address' => request()->ip(),
+                    'message'    => "Imported {$operatorsCreated} new operator(s) and {$vehiclesCreated} vehicle(s) from a spreadsheet.",
+                ],
+            ]);
+        });
+
+        $skipped = $this->importInvalidCount;
+
+        $this->reset(['importFile', 'importRows']);
+        unset($this->getUsers, $this->importValidCount, $this->importInvalidCount);
+
+        Flux::modal('import-operators')->close();
+
+        Flux::toast(
+            variant: 'success',
+            duration: 6000,
+            heading: 'Import complete.',
+            text: "{$operatorsCreated} new operator(s) and {$vehiclesCreated} vehicle(s) added."
+                . ($skipped ? " {$skipped} row(s) skipped due to errors." : '')
+        );
+    }
+
 
 
 };
@@ -166,15 +458,28 @@ new  #[Layout('layouts.admin-layout')] class extends Component
         description="Registered Users"
         class="mb-4"
     >
-        <flux:modal.trigger name="export-operators" wire:click="prepareExportModal">
-            <flux:button
-                icon="arrow-down-tray"
-                size="sm"
-                class="font-secondary w-full sm:w-auto justify-center !bg-black !text-white !border-0 hover:!bg-neutral-800 dark:!bg-white dark:!text-black dark:hover:!bg-neutral-200"
-            >
-                Export Operators
-            </flux:button>
-        </flux:modal.trigger>
+        <div class="flex items-center gap-2">
+            <flux:modal.trigger name="import-operators" wire:click="prepareImportModal">
+                <flux:button
+                    icon="arrow-up-tray"
+                    size="sm"
+                    variant="outline"
+                    class="font-secondary justify-center"
+                >
+                    Import Operators
+                </flux:button>
+            </flux:modal.trigger>
+
+            <flux:modal.trigger name="export-operators" wire:click="prepareExportModal">
+                <flux:button
+                    icon="arrow-down-tray"
+                    size="sm"
+                    class="font-secondary justify-center !bg-black !text-white !border-0 hover:!bg-neutral-800 dark:!bg-white dark:!text-black dark:hover:!bg-neutral-200"
+                >
+                    Export Operators
+                </flux:button>
+            </flux:modal.trigger>
+        </div>
     </x-page-header>
 
     <div class="hidden sm:flex sm:items-center sm:justify-between gap-3 mb-6">
@@ -182,7 +487,6 @@ new  #[Layout('layouts.admin-layout')] class extends Component
             class="!font-primary !font-bold !text-light-txt-primary dark:!text-dark-txt-primary"
             style="font-size: var(--text-section-heading)"
         >
-            Every commuter and operator registered in the system.
         </x-heading>
 
         <flux:link href="{{ route('admin.register.user') }}" wire:navigate class="w-full sm:w-auto">
@@ -205,15 +509,30 @@ new  #[Layout('layouts.admin-layout')] class extends Component
         </div>
 
         <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto shrink-0">
-            <flux:modal.trigger name="export-operators" wire:click="prepareExportModal">
-                <flux:button
-                    icon="arrow-down-tray"
-                    size="sm"
-                    class="font-secondary w-full sm:w-auto justify-center !bg-black !text-white !border-0 hover:!bg-neutral-800 dark:!bg-white dark:!text-black dark:hover:!bg-neutral-200"
-                >
-                    Export Operators
-                </flux:button>
-            </flux:modal.trigger>
+
+            <div class="flex items-center gap-2">
+                <flux:modal.trigger name="import-operators" wire:click="prepareImportModal">
+                    <flux:button
+                        icon="arrow-up-tray"
+                        size="sm"
+                        variant="outline"
+                        class="font-secondary w-full sm:w-auto justify-center"
+                    >
+                        Import Operators
+                    </flux:button>
+                </flux:modal.trigger>
+
+                <flux:modal.trigger name="export-operators" wire:click="prepareExportModal">
+                    <flux:button
+                        icon="arrow-down-tray"
+                        size="sm"
+                        class="font-secondary w-full sm:w-auto justify-center !bg-black !text-white !border-0 hover:!bg-neutral-800 dark:!bg-white dark:!text-black dark:hover:!bg-neutral-200"
+                    >
+                        Export Operators
+                    </flux:button>
+                </flux:modal.trigger>
+            </div>
+
             <flux:link href="{{ route('admin.register.user') }}" wire:navigate class="w-full sm:w-auto">
                 <flux:button variant="primary" icon="plus" size="sm" class="font-secondary w-full sm:w-auto justify-center bg-primary text-white hover:bg-primary-hover dark:bg-secondary dark:text-[var(--color-dark-primary)] dark:hover:bg-secondary-hover">
                     Add user
@@ -333,6 +652,111 @@ new  #[Layout('layouts.admin-layout')] class extends Component
                 >
                     Download Excel
                 </flux:button>
+            </div>
+        </div>
+    </flux:modal>
+
+    {{-- ===================== IMPORT OPERATORS MODAL ===================== --}}
+    <flux:modal
+        name="import-operators"
+        :closable="false"
+        class="w-[calc(100%-2rem)] sm:max-w-lg md:max-w-3xl mx-auto rounded-xl overflow-hidden"
+    >
+        <div class="flex flex-col p-4 sm:p-6 !pr-4 sm:!pr-6 space-y-5 overflow-y-auto max-h-[70vh]">
+            <div class="flex items-start justify-between">
+                <div>
+                    <flux:heading size="xl" class="!font-primary !font-bold text-light-txt-primary dark:text-dark-txt-primary">
+                        Import operators
+                    </flux:heading>
+                    <flux:text class="mt-1 font-secondary text-sm text-light-txt-muted dark:text-dark-txt-muted">
+                        Upload an Excel (.xlsx) or CSV file with one row per vehicle. Rows sharing a phone number are added to the same operator.
+                    </flux:text>
+                </div>
+                <flux:modal.close>
+                    <button type="button" class="p-1 rounded-full hover:bg-light-subtle dark:hover:bg-dark-subtle text-light-txt-muted dark:text-dark-txt-muted -mt-1">
+                        <flux:icon name="x-mark" class="w-5 h-5" />
+                    </button>
+                </flux:modal.close>
+            </div>
+
+            <flux:field>
+                <div class="flex items-center justify-between">
+                    <flux:label class="font-secondary text-table-row font-medium text-light-txt-body dark:text-dark-txt-primary">Spreadsheet file</flux:label>
+                    <flux:button type="button" variant="ghost" size="xs" icon="arrow-down-tray" wire:click="downloadImportTemplate" class="font-secondary">
+                        Download template
+                    </flux:button>
+                </div>
+                <flux:input type="file" wire:model="importFile" accept=".xlsx,.csv" />
+                <flux:error name="importFile" />
+                <div wire:loading wire:target="importFile" class="font-secondary text-xs text-light-txt-muted dark:text-dark-txt-muted mt-1">
+                    Reading file…
+                </div>
+            </flux:field>
+
+            @if (count($importRows))
+                <div class="flex flex-wrap items-center gap-2">
+                    <flux:badge color="green" size="sm">{{ $this->importValidCount }} ready</flux:badge>
+                    @if ($this->importInvalidCount)
+                        <flux:badge color="red" size="sm">{{ $this->importInvalidCount }} with errors (will be skipped)</flux:badge>
+                    @endif
+                </div>
+
+                <div class="border border-light-bd-default dark:border-dark-bd-default rounded-lg overflow-hidden">
+                    <div class="overflow-auto max-h-64">
+                        <table class="w-full text-left font-secondary text-xs">
+                            <thead class="sticky top-0 bg-light-subtle dark:bg-dark-secondary text-light-txt-muted dark:text-dark-txt-muted">
+                                <tr>
+                                    <th class="px-3 py-2">Row</th>
+                                    <th class="px-3 py-2">Operator</th>
+                                    <th class="px-3 py-2">Plate</th>
+                                    <th class="px-3 py-2">Type</th>
+                                    <th class="px-3 py-2">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-light-bd-default dark:divide-dark-bd-default text-light-txt-body dark:text-dark-txt-primary">
+                                @foreach ($importRows as $row)
+                                    <tr wire:key="import-row-{{ $row['line'] }}">
+                                        <td class="px-3 py-2 align-top">{{ $row['line'] }}</td>
+                                        <td class="px-3 py-2 align-top">{{ $row['data']['operator_name'] ?: '—' }}</td>
+                                        <td class="px-3 py-2 align-top">{{ $row['data']['plate_number'] ?: '—' }}</td>
+                                        <td class="px-3 py-2 align-top">{{ $row['data']['vehicle_type'] ?: '—' }}</td>
+                                        <td class="px-3 py-2 align-top">
+                                            @if (empty($row['errors']))
+                                                <span class="text-success dark:text-dark-success">OK</span>
+                                            @else
+                                                <ul class="text-danger dark:text-dark-danger list-disc pl-4 space-y-0.5">
+                                                    @foreach ($row['errors'] as $error)
+                                                        <li>{{ $error }}</li>
+                                                    @endforeach
+                                                </ul>
+                                            @endif
+                                        </td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            @endif
+
+            <div class="flex flex-col-reverse sm:flex-row justify-end items-stretch sm:items-center gap-2 pt-2 border-t border-light-bd-default dark:border-dark-bd-default">
+                <flux:modal.close class="w-full sm:w-auto">
+                    <flux:button type="button" variant="ghost" class="w-full sm:w-auto justify-center font-secondary">
+                        Cancel
+                    </flux:button>
+                </flux:modal.close>
+                @if (count($importRows) && $this->importValidCount > 0)
+                    <flux:button
+                        type="button"
+                        icon="arrow-up-tray"
+                        wire:click="confirmImport"
+                        wire:loading.attr="disabled"
+                        wire:target="confirmImport"
+                        class="font-secondary w-full sm:w-auto justify-center bg-primary text-white hover:bg-primary-hover dark:bg-secondary dark:text-[var(--color-dark-primary)] dark:hover:bg-secondary-hover"
+                    >
+                        Import {{ $this->importValidCount }} valid row(s)
+                    </flux:button>
+                @endif
             </div>
         </div>
     </flux:modal>

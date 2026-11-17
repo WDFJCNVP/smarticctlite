@@ -15,13 +15,13 @@ return new class extends Migration
             $table->id();
             $table->string('user_code', 20)->unique()->nullable();
             $table->string('name')->nullable();
-            $table->string('email_address')->unique()->nullable(); // optional in Lite
+            $table->string('email_address')->unique()->nullable();
             $table->integer('age')->nullable();
             $table->text('address')->nullable();
             $table->string('phone_number')->nullable();
             $table->enum('role', ['operator', 'admin', 'cashier'])->default('operator')->index();
             $table->timestamp('email_verified_at')->nullable();
-            $table->string('password')->nullable(); // operators are records only, they never log in
+            $table->string('password')->nullable(); 
             $table->rememberToken();
             $table->timestamps();
             $table->softDeletes();
