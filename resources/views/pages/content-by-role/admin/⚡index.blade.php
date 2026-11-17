@@ -6,28 +6,15 @@ use Livewire\Attributes\Computed;
 use Livewire\Attributes\On;
 use App\Models\User;
 use App\Models\Vehicle;
-use App\Models\Queue;
-use App\Models\CardTransaction;
-use App\Models\CashTransaction;
-use App\Models\TopUpTransaction;
-use App\Models\Card;
-use App\Models\Post;
-use App\Models\TripRequest;
-use App\Models\RentTransaction;
-use App\Models\AuditLog;
-use App\Models\TravelRecord;
 
 new #[Layout('layouts.admin-layout')] class extends Component
 {
-    public string $range = '7'; // days: 7, 14, 30
-    public string $peakVehicleType = 'all'; // filter for the peak-queueing-time chart
-
     // ===================== KPI CARDS =====================
 
     #[Computed]
-    public function totalUsers()
+    public function totalOperators()
     {
-        return User::whereIn('role', ['operator', 'commuter'])->count();
+        return User::where('role', 'operator')->count();
     }
 
     #[Computed]
@@ -36,533 +23,12 @@ new #[Layout('layouts.admin-layout')] class extends Component
         return Vehicle::count();
     }
 
-    #[Computed]
-    public function registeredToday()
-    {
-        return User::whereIn('role', ['operator', 'commuter'])
-            ->whereDate('created_at', today())
-            ->count();
-    }
-
-    #[Computed]
-    public function vehiclesQueueingNow()
-    {
-        return Queue::whereIn('status', ['staging', 'loading'])->count();
-    }
-
-#[Computed]
-public function totalRevenue()
-{
-    $queueFeeCard = CardTransaction::where('transaction_type', 'queueing_fee')
-        ->where('status', 'success')
-        ->sum('amount');
-
-    $queueFeeCash = CashTransaction::where('status', 'success')
-        ->where('reference_no', 'like', 'CASH-%')
-        ->sum('amount');
-
-    $topUps = TopUpTransaction::where('status', 'paid')->sum('amount_paid');
-
-    $fareCard = CardTransaction::where('transaction_type', 'queue_deduction')
-        ->where('source', 'kiosk_tap_in')
-        ->where('status', 'success')
-        ->sum('amount');
-
-    $fareCash = CashTransaction::where('status', 'success')
-        ->where('reference_no', 'like', 'FARECASH-%')
-        ->sum('amount');
-
-    return $queueFeeCard + $queueFeeCash + $topUps + $fareCard + $fareCash;
-}
-
-private function queueFeeRevenueForDate(\Carbon\Carbon $date): float
-{
-    $cardFees = CardTransaction::where('transaction_type', 'queueing_fee')
-        ->where('status', 'success')
-        ->whereDate('transaction_time', $date)
-        ->sum('amount');
-
-    $cashFees = CashTransaction::where('status', 'success')
-        ->where('reference_no', 'like', 'CASH-%')
-        ->whereDate('created_at', $date)
-        ->sum('amount');
-
-    return (float) ($cardFees + $cashFees);
-}
-
-private function dayOverDayTrend(float $today, float $yesterday): ?float
-{
-    if ($yesterday == 0.0) {
-        return $today > 0 ? 100.0 : null;
-    }
-
-    return round((($today - $yesterday) / $yesterday) * 100, 1);
-}
-
-#[Computed]
-public function todayRevenue()
-{
-    return $this->queueFeeRevenueForDate(today());
-}
-
-    #[Computed]
-    public function queueFeeRevenueToday()
-    {
-        // Was: today's queue count x *today's current* configured rate —
-        // which silently misreports the past if a rate is changed mid-day.
-        // Now the same real, transaction-level figure as "Revenue Today".
-        return $this->todayRevenue;
-    }
-
-    #[Computed]
-    public function cardAdoptionRate()
-    {
-        $totalUsers = $this->totalUsers ?: 1;
-
-        // Distinct cardholders, not raw card rows. A lost/damaged card
-        // replacement (admin/card-reports.blade.php -> approveReport())
-        // creates a brand-new Card row and only suspends the old one, so
-        // counting rows double-counts every replacement against the same
-        // user and lets this rate drift past 100% over time.
-        $cardHolders = Card::distinct('user_id')->count('user_id');
-
-        return round(($cardHolders / $totalUsers) * 100, 1);
-    }
-
-    #[Computed]
-    public function failedTransactionsCount()
-    {
-        return CardTransaction::whereIn('status', ['failed', 'insufficient_balance'])
-            ->whereDate('created_at', today())
-            ->count();
-    }
-
-    #[Computed]
-    public function totalWithdrawn()
-    {
-        return CardTransaction::where('transaction_type', 'admin_withdrawal')
-            ->whereIn('status', ['pending', 'success'])
-            ->sum('amount');
-    }
-
-    #[Computed]
-    public function pendingWithdrawals()
-    {
-        return CardTransaction::where('transaction_type', 'admin_withdrawal')
-            ->where('status', 'pending')
-            ->count();
-    }
-
-    #[Computed]
-    public function withdrawnToday()
-    {
-        return CardTransaction::where('transaction_type', 'admin_withdrawal')
-            ->whereIn('status', ['pending', 'success'])
-            ->whereDate('transaction_time', today())
-            ->sum('amount');
-    }
-
-    // ===================== CHARTS =====================
-
-    #[Computed]
-    public function roleSplit()
-    {
-        $counts = User::whereIn('role', ['operator', 'commuter'])
-            ->selectRaw('role, count(*) as total')
-            ->groupBy('role')
-            ->pluck('total', 'role');
-
-        return [
-            'labels' => $counts->keys()->map(fn ($r) => ucfirst($r))->values()->toArray(),
-            'data' => $counts->values()->toArray(),
-        ];
-    }
-
-    #[Computed]
-    public function commuterTypeSplit()
-    {
-        $counts = User::where('role', 'commuter')
-            ->whereNotNull('commuter_type')
-            ->selectRaw('commuter_type, count(*) as total')
-            ->groupBy('commuter_type')
-            ->pluck('total', 'commuter_type');
-
-        return [
-            'labels' => $counts->keys()->map(fn ($t) => ucwords(str_replace('_', ' ', $t)))->values()->toArray(),
-            'data' => $counts->values()->toArray(),
-        ];
-    }
-
-    #[Computed]
-    public function registrationsChart()
-    {
-        $days = max(1, (int) $this->range);
-        $start = today()->subDays($days - 1);
-        $end = today();
-
-        $counts = User::whereIn('role', ['operator', 'commuter'])
-            ->whereBetween('created_at', [$start->copy()->startOfDay(), $end->copy()->endOfDay()])
-            ->selectRaw('DATE(created_at) as day, COUNT(*) as total')
-            ->groupBy('day')
-            ->pluck('total', 'day');
-
-        $labels = [];
-        $data = [];
-
-        for ($cursor = $start->copy(); $cursor->lte($end); $cursor->addDay()) {
-            $key = $cursor->format('Y-m-d');
-            $labels[] = $cursor->format('M j');
-            $data[] = (int) ($counts[$key] ?? 0);
-        }
-
-        return compact('labels', 'data');
-    }
-
-    #[Computed]
-    public function revenueByPaymentMethod()
-    {
-        $days = max(1, (int) $this->range);
-
-        $counts = TopUpTransaction::where('status', 'paid')
-            ->whereBetween('created_at', [today()->subDays($days - 1)->startOfDay(), today()->endOfDay()])
-            ->selectRaw('payment_method, SUM(amount_paid) as total')
-            ->groupBy('payment_method')
-            ->pluck('total', 'payment_method');
-
-        return [
-            'labels' => $counts->keys()->map(fn ($m) => $m ? ucfirst($m) : 'Unknown')->values()->toArray(),
-            'data' => $counts->values()->toArray(),
-        ];
-    }
-
-    #[Computed]
-    public function queueStatusBreakdown()
-    {
-        $counts = Queue::whereDate('time_queued', today())
-            ->selectRaw('status, count(*) as total')
-            ->groupBy('status')
-            ->pluck('total', 'status');
-
-        return [
-            'labels' => $counts->keys()->map(fn ($s) => ucfirst($s))->values()->toArray(),
-            'data' => $counts->values()->toArray(),
-        ];
-    }
-
-    #[Computed]
-    public function queueVolumeByVehicleType()
-    {
-        $days = max(1, (int) $this->range);
-
-        $counts = Queue::whereBetween('time_queued', [today()->subDays($days - 1)->startOfDay(), today()->endOfDay()])
-            ->selectRaw('vehicle_type, count(*) as total')
-            ->groupBy('vehicle_type')
-            ->pluck('total', 'vehicle_type');
-
-        return [
-            'labels' => $counts->keys()->values()->toArray(),
-            'data' => $counts->values()->toArray(),
-        ];
-    }
-
-    #[Computed]
-    public function postsByRole()
-    {
-        $days = max(1, (int) $this->range);
-
-        $counts = Post::query()
-            ->join('users', 'posts.user_id', '=', 'users.id')
-            ->where('posts.type', 'rental')
-            ->whereIn('users.role', ['operator', 'commuter'])
-            ->whereDate('posts.created_at', '>=', today()->subDays($days - 1))
-            ->selectRaw('users.role as role, count(*) as total')
-            ->groupBy('users.role')
-            ->pluck('total', 'role');
-
-        return [
-            'labels' => $counts->keys()->map(fn ($r) => ucfirst($r))->values()->toArray(),
-            'data' => $counts->values()->toArray(),
-        ];
-    }
-
-    #[Computed]
-    public function rentTransactionFunnel()
-    {
-        $counts = RentTransaction::selectRaw('status, count(*) as total')
-            ->groupBy('status')
-            ->pluck('total', 'status');
-
-        return [
-            'labels' => $counts->keys()->map(fn ($s) => ucfirst($s))->values()->toArray(),
-            'data' => $counts->values()->toArray(),
-        ];
-    }
-
-    #[Computed]
-    public function tripRequestStatusSplit()
-    {
-        $counts = TripRequest::selectRaw('status, count(*) as total')
-            ->groupBy('status')
-            ->pluck('total', 'status');
-
-        return [
-            'labels' => $counts->keys()->map(fn ($s) => ucfirst($s))->values()->toArray(),
-            'data' => $counts->values()->toArray(),
-        ];
-    }
-
-    #[Computed]
-    public function cardsByStatus()
-    {
-        $counts = Card::selectRaw('status, count(*) as total')
-            ->groupBy('status')
-            ->pluck('total', 'status');
-
-        return [
-            'labels' => $counts->keys()->map(fn ($s) => ucfirst($s))->values()->toArray(),
-            'data' => $counts->values()->toArray(),
-        ];
-    }
-
-    #[Computed]
-    public function auditActionVolume()
-    {
-        $days = max(1, (int) $this->range);
-
-        $counts = AuditLog::whereBetween('created_at', [today()->subDays($days - 1)->startOfDay(), today()->endOfDay()])
-            ->selectRaw('action, count(*) as total')
-            ->groupBy('action')
-            ->orderByDesc('total')
-            ->limit(8)
-            ->pluck('total', 'action');
-
-        return [
-            'labels' => $counts->keys()->values()->toArray(),
-            'data' => $counts->values()->toArray(),
-        ];
-    }
-
-    #[Computed]
-    public function recentAuditEntries()
-    {
-        return AuditLog::with('user:id,name')
-            ->latest()
-            ->limit(5)
-            ->get(['id', 'user_id', 'action', 'subject', 'channel', 'created_at']);
-    }
-
-    private function fareRevenueForDate(\Carbon\Carbon $date): float
-    {
-        $cardFares = CardTransaction::where('transaction_type', 'fare_earning')
-            ->where('source', 'cashier')
-            ->where('status', 'success')
-            ->whereDate('transaction_time', $date)
-            ->sum('amount');
-
-        $cashFares = CashTransaction::where('status', 'success')
-            ->where('reference_no', 'like', 'FARECASH-%')
-            ->whereDate('created_at', $date)
-            ->sum('amount');
-
-        return (float) ($cardFares + $cashFares);
-    }
-
-    #[Computed]
-    public function tripsToday()
-    {
-        return TravelRecord::whereDate('created_at', today())->count();
-    }
-
-    #[Computed]
-    public function tripsTodayTrend()
-    {
-        $today = $this->tripsToday;
-        $yesterday = TravelRecord::whereDate('created_at', today()->subDay())->count();
-
-        if ($yesterday == 0) {
-            return $today > 0 ? 100.0 : null;
-        }
-
-        return round((($today - $yesterday) / $yesterday) * 100, 1);
-    }
-
-    #[Computed]
-    public function faresCollectedToday()
-    {
-        return $this->fareRevenueForDate(today());
-    }
-
-    #[Computed]
-    public function faresCollectedTrend()
-    {
-        return $this->dayOverDayTrend(
-            $this->faresCollectedToday,
-            $this->fareRevenueForDate(today()->subDay())
-        );
-    }
-
-    #[Computed]
-    public function farePaymentModeSplit()
-    {
-        $cardFares = CardTransaction::where('transaction_type', 'fare_earning')
-            ->where('source', 'cashier')
-            ->where('status', 'success')
-            ->whereDate('transaction_time', today())
-            ->sum('amount');
-
-        $cashFares = CashTransaction::where('status', 'success')
-            ->where('reference_no', 'like', 'FARECASH-%')
-            ->whereDate('created_at', today())
-            ->sum('amount');
-
-        $labels = [];
-        $data = [];
-
-        if ($cardFares > 0) {
-            $labels[] = 'Card';
-            $data[] = (float) $cardFares;
-        }
-
-        if ($cashFares > 0) {
-            $labels[] = 'Cash';
-            $data[] = (float) $cashFares;
-        }
-
-        return ['labels' => $labels, 'data' => $data];
-    }
-
-    #[Computed]
-    public function tripsByDestination()
-    {
-        $days = max(1, (int) $this->range);
-
-        $counts = TravelRecord::whereBetween('created_at', [today()->subDays($days - 1)->startOfDay(), today()->endOfDay()])
-            ->selectRaw('destination, count(*) as total')
-            ->groupBy('destination')
-            ->orderByDesc('total')
-            ->limit(8)
-            ->pluck('total', 'destination');
-
-        return [
-            'labels' => $counts->keys()->values()->toArray(),
-            'data' => $counts->values()->toArray(),
-        ];
-    }
-
-    #[Computed]
-    public function tripsByDestinationTrend()
-    {
-        return $this->trendPercent(TravelRecord::class, 'created_at');
-    }
-
-    // ===================== NEW: QUEUE PAYMENT MODE SPLIT =====================
-
-    #[Computed]
-    public function queuePaymentModeSplit()
-    {
-        // Card payments for queue fees today
-        $cardFees = CardTransaction::where('transaction_type', 'queueing_fee')
-            ->where('status', 'success')
-            ->whereDate('transaction_time', today())
-            ->sum('amount');
-
-        // Cash payments for queue fees today
-        $cashFees = CashTransaction::whereDate('created_at', today())
-            ->where('status', 'success')
-            ->sum('amount');
-
-        $labels = [];
-        $data = [];
-
-        if ($cardFees > 0) {
-            $labels[] = 'Card';
-            $data[] = (float) $cardFees;
-        }
-
-        if ($cashFees > 0) {
-            $labels[] = 'Cash';
-            $data[] = (float) $cashFees;
-        }
-
-        if (empty($labels)) {
-            return ['labels' => [], 'data' => []];
-        }
-
-        return [
-            'labels' => $labels,
-            'data' => $data,
-        ];
-    }
-
-    // ===================== PEAK QUEUEING TIME (by vehicle type) =====================
-
-    #[Computed]
-    public function vehicleTypeOptions()
-    {
-        return Vehicle::query()->whereNotNull('vehicle_type')->distinct()->orderBy('vehicle_type')->pluck('vehicle_type');
-    }
-
-    #[Computed]
-    public function peakVehicleType()
-    {
-        return $this->peakVehicleType ?? 'all';
-    }
-
-    #[Computed]
-    public function peakTimeByVehicleType()
-    {
-        $days = max(1, (int) $this->range);
-        $start = today()->subDays($days - 1)->startOfDay();
-        $end = today()->endOfDay();
-
-        $hourExpr = match (\Illuminate\Support\Facades\DB::connection()->getDriverName()) {
-            'pgsql' => 'EXTRACT(HOUR FROM time_queued)',
-            default => 'HOUR(time_queued)',
-        };
-
-        $counts = Queue::whereBetween('time_queued', [$start, $end])
-            ->when($this->peakVehicleType !== 'all', fn ($q) => $q->where('vehicle_type', $this->peakVehicleType))
-            ->selectRaw("{$hourExpr} as hour, count(*) as total")
-            ->groupBy('hour')
-            ->pluck('total', 'hour');
-
-        $labels = [];
-        $data = [];
-
-        for ($hour = 0; $hour < 24; $hour++) {
-            $labels[] = \Carbon\Carbon::createFromTime($hour)->format('g A');
-            $data[] = (int) ($counts[(int) $hour] ?? 0);
-        }
-
-        return compact('labels', 'data');
-    }
+    // ===================== OPERATOR DOCUMENT EXPIRY =====================
 
     /**
-     * Get the peak hour of the day.
+     * Every vehicle whose franchise is already expired or expires within
+     * 30 days. Most overdue first. No limit, so nothing gets hidden.
      */
-    #[Computed]
-    public function peakHour()
-    {
-        $chart = $this->peakTimeByVehicleType;
-        $max = max($chart['data']);
-
-        if ($max <= 0) {
-            return null;
-        }
-
-        return [
-            'time' => $chart['labels'][array_search($max, $chart['data'])],
-            'count' => $max,
-        ];
-    }
-
-    public function updatedPeakVehicleType()
-    {
-        $this->dispatch('peak-time-chart-updated', chart: $this->peakTimeByVehicleType);
-    }
-
-    // ===================== OPERATOR FRANCHISE EXPIRY =====================
-
     #[Computed]
     public function expiringOperatorDocs()
     {
@@ -572,289 +38,48 @@ public function todayRevenue()
             ->whereNotNull('franchise_expiry_date')
             ->where('franchise_expiry_date', '<=', $soon)
             ->orderBy('franchise_expiry_date', 'asc')
-            ->limit(8)
             ->get(['id', 'user_id', 'plate_number', 'vehicle_type', 'franchise_expiry_date']);
     }
 
-    // ===================== TREND (REAL DATA — REPLACES "LIVE") =====================
-
-    private function trendPercent(string $modelClass, string $dateColumn, ?\Closure $scope = null, ?string $sumColumn = null, ?int $windowDays = null): ?float
-    {
-        $days = $windowDays ?? max(1, (int) $this->range);
-
-        $currentStart = today()->subDays($days - 1)->startOfDay();
-        $currentEnd = today()->endOfDay();
-        $previousStart = today()->subDays(($days * 2) - 1)->startOfDay();
-        $previousEnd = today()->subDays($days)->endOfDay();
-
-        $build = function ($start, $end) use ($modelClass, $dateColumn, $scope) {
-            $query = $modelClass::query()->whereBetween($dateColumn, [$start, $end]);
-
-            return $scope ? $scope($query) : $query;
-        };
-
-        $current = $sumColumn ? $build($currentStart, $currentEnd)->sum($sumColumn) : $build($currentStart, $currentEnd)->count();
-        $previous = $sumColumn ? $build($previousStart, $previousEnd)->sum($sumColumn) : $build($previousStart, $previousEnd)->count();
-
-        if ($previous == 0) {
-            return $current > 0 ? 100.0 : null;
-        }
-
-        return round((($current - $previous) / $previous) * 100, 1);
-    }
-
     #[Computed]
-    public function totalUsersTrend()
+    public function expiredCount()
     {
-        $current = $this->totalUsers;
-        $previous = User::whereIn('role', ['operator', 'commuter'])->where('created_at', '<=', today()->subDays(7))->count();
-
-        if ($previous == 0) {
-            return $current > 0 ? 100.0 : null;
-        }
-
-        return round((($current - $previous) / $previous) * 100, 1);
-    }
-
-    #[Computed]
-    public function totalVehiclesTrend()
-    {
-        $current = $this->totalVehicles;
-        $previous = Vehicle::where('created_at', '<=', today()->subDays(7))->count();
-
-        if ($previous == 0) {
-            return $current > 0 ? 100.0 : null;
-        }
-
-        return round((($current - $previous) / $previous) * 100, 1);
-    }
-
-    #[Computed]
-    public function registeredTodayTrend()
-    {
-        return $this->trendPercent(User::class, 'created_at', fn ($q) => $q->whereIn('role', ['operator', 'commuter']), null, 1);
-    }
-
-    #[Computed]
-    public function queueingNowTrend()
-    {
-        $current = $this->vehiclesQueueingNow;
-        $cutoff = now()->subDay();
-
-        $previous = Queue::whereIn('status', ['staging', 'loading'])
-            ->whereDate('time_queued', $cutoff->toDateString())
-            ->whereTime('time_queued', '<=', $cutoff->format('H:i:s'))
+        return $this->expiringOperatorDocs
+            ->filter(fn ($v) => $v->franchise_expiry_date->lt(today()))
             ->count();
-
-        if ($previous == 0) {
-            return $current > 0 ? 100.0 : null;
-        }
-
-        return round((($current - $previous) / $previous) * 100, 1);
     }
 
     #[Computed]
-    public function revenueTodayTrend()
+    public function expiringSoonCount()
     {
-        // Was: trendPercent() over TopUpTransaction (card top-ups) — an
-        // unrelated revenue stream from the queueing-fee figure this pill
-        // sits next to in the live status strip. Now compares the same
-        // queueing-fee metric, today vs yesterday.
-        return $this->dayOverDayTrend(
-            $this->todayRevenue,
-            $this->queueFeeRevenueForDate(today()->subDay())
-        );
+        return $this->expiringOperatorDocs->count() - $this->expiredCount;
     }
 
-    #[Computed]
-    public function queueFeeRevenueTrend()
-    {
-        return $this->revenueTodayTrend;
-    }
-
-    #[Computed]
-    public function failedTransactionsTrend()
-    {
-        return $this->trendPercent(CardTransaction::class, 'created_at', fn ($q) => $q->whereIn('status', ['failed', 'insufficient_balance']), null, 1);
-    }
-
-    #[Computed]
-    public function cardAdoptionTrend()
-    {
-        $current = $this->cardAdoptionRate;
-
-        $usersAWeekAgo = User::whereIn('role', ['operator', 'commuter'])->where('created_at', '<=', today()->subDays(7))->count() ?: 1;
-        $cardHoldersAWeekAgo = Card::where('created_at', '<=', today()->subDays(7))->distinct('user_id')->count('user_id');
-        $previous = round(($cardHoldersAWeekAgo / $usersAWeekAgo) * 100, 1);
-
-        if ($previous == 0) {
-            return $current > 0 ? 100.0 : null;
-        }
-
-        return round((($current - $previous) / $previous) * 100, 1);
-    }
-
-    #[Computed]
-    public function registrationsTrend()
-    {
-        return $this->trendPercent(User::class, 'created_at', fn ($q) => $q->whereIn('role', ['operator', 'commuter']));
-    }
-
-    #[Computed]
-    public function revenueTrend()
-    {
-        return $this->trendPercent(TopUpTransaction::class, 'created_at', fn ($q) => $q->where('status', 'paid'), 'amount_paid');
-    }
-
-    #[Computed]
-    public function queueVolumeTrend()
-    {
-        return $this->trendPercent(Queue::class, 'time_queued');
-    }
-
-    #[Computed]
-    public function postsTrend()
-    {
-        return $this->trendPercent(
-            Post::class,
-            'created_at',
-            fn ($q) => $q->where('type', 'rental')->whereHas('user', fn ($u) => $u->whereIn('role', ['operator', 'commuter']))
-        );
-    }
-
-    #[Computed]
-    public function auditTrend()
-    {
-        return $this->trendPercent(AuditLog::class, 'created_at');
-    }
-
-
-    public function updatedRange()
-    {
-        $this->dispatch('registrations-chart-updated', chart: $this->registrationsChart);
-        $this->dispatch('revenue-chart-updated', chart: $this->revenueByPaymentMethod);
-        $this->dispatch('queue-volume-chart-updated', chart: $this->queueVolumeByVehicleType);
-        $this->dispatch('posts-by-role-chart-updated', chart: $this->postsByRole);
-        $this->dispatch('audit-action-chart-updated', chart: $this->auditActionVolume);
-        $this->dispatch('queue-payment-mode-updated', chart: $this->queuePaymentModeSplit);
-        $this->dispatch('peak-time-chart-updated', chart: $this->peakTimeByVehicleType);
-        $this->dispatch('trips-destination-chart-updated', chart: $this->tripsByDestination);
-    }
-
+    // ===================== LIVE REFRESH =====================
 
     #[On('echo:user-info-updated,.UserInfoUpdated')]
     #[On('echo:vehicle-queue,.QueuedVehicleEvent')]
     public function refreshDashboard()
     {
         unset(
-            $this->totalUsers,
+            $this->totalOperators,
             $this->totalVehicles,
-            $this->registeredToday,
-            $this->vehiclesQueueingNow,
-            $this->todayRevenue,
-            $this->queueFeeRevenueToday,
-            $this->cardAdoptionRate,
-            $this->failedTransactionsCount,
-            $this->totalWithdrawn,
-            $this->pendingWithdrawals,
-            $this->withdrawnToday,
-            $this->roleSplit,
-            $this->commuterTypeSplit,
-            $this->registrationsChart,
-            $this->revenueByPaymentMethod,
-            $this->queueStatusBreakdown,
-            $this->queueVolumeByVehicleType,
-            $this->postsByRole,
-            $this->rentTransactionFunnel,
-            $this->tripRequestStatusSplit,
-            $this->cardsByStatus,
-            $this->auditActionVolume,
-            $this->recentAuditEntries,
-            $this->queuePaymentModeSplit,
-            $this->peakTimeByVehicleType,
-            $this->peakHour,
             $this->expiringOperatorDocs,
-            $this->tripsToday,
-            $this->tripsTodayTrend,
-            $this->faresCollectedToday,
-            $this->faresCollectedTrend,
-            $this->farePaymentModeSplit,
-            $this->tripsByDestination,
-            $this->tripsByDestinationTrend,
-            $this->totalUsersTrend,
-            $this->totalVehiclesTrend,
-            $this->registeredTodayTrend,
-            $this->queueingNowTrend,
-            $this->revenueTodayTrend,
-            $this->queueFeeRevenueTrend,
-            $this->failedTransactionsTrend,
-            $this->cardAdoptionTrend,
-            $this->registrationsTrend,
-            $this->revenueTrend,
-            $this->queueVolumeTrend,
-            $this->postsTrend,
-            $this->auditTrend,
+            $this->expiredCount,
+            $this->expiringSoonCount,
         );
-
-        $this->dispatch('peak-time-chart-updated', chart: $this->peakTimeByVehicleType);
-        $this->dispatch('role-chart-updated', chart: $this->roleSplit);
-        $this->dispatch('commuter-type-chart-updated', chart: $this->commuterTypeSplit);
-        $this->dispatch('registrations-chart-updated', chart: $this->registrationsChart);
-        $this->dispatch('revenue-chart-updated', chart: $this->revenueByPaymentMethod);
-        $this->dispatch('queue-status-chart-updated', chart: $this->queueStatusBreakdown);
-        $this->dispatch('queue-volume-chart-updated', chart: $this->queueVolumeByVehicleType);
-        $this->dispatch('posts-by-role-chart-updated', chart: $this->postsByRole);
-        $this->dispatch('rent-funnel-chart-updated', chart: $this->rentTransactionFunnel);
-        $this->dispatch('trip-request-chart-updated', chart: $this->tripRequestStatusSplit);
-        $this->dispatch('cards-status-chart-updated', chart: $this->cardsByStatus);
-        $this->dispatch('audit-action-chart-updated', chart: $this->auditActionVolume);
-        $this->dispatch('queue-payment-mode-updated', chart: $this->queuePaymentModeSplit);
-        $this->dispatch('fare-payment-mode-updated', chart: $this->farePaymentModeSplit);
-        $this->dispatch('trips-destination-chart-updated', chart: $this->tripsByDestination);
-        $this->dispatch('status-strip-updated', queueing: $this->vehiclesQueueingNow, revenue: $this->todayRevenue);
     }
 };
 ?>
 
 <div>
-    {{-- ===================== SCOPED STYLES ===================== --}}
     <style>
-        .flap-flip { animation: flap-flip 0.5s ease-out; }
-        @keyframes flap-flip {
-            0%   { transform: rotateX(90deg); opacity: 0.3; }
-            60%  { transform: rotateX(0deg); opacity: 1; }
-            100% { transform: rotateX(0deg); opacity: 1; }
-        }
-        @media (prefers-reduced-motion: reduce) {
-            .flap-flip { animation: none; }
-        }
         .zone-bar { width: 4px; height: 1.1rem; border-radius: 2px; }
         .zone-rule { border: none; border-top: 1.5px dashed; opacity: 0.35; margin-top: 0.5rem; margin-bottom: 1rem; }
-        .live-badge {
-            display: inline-flex; align-items: center; gap: 0.375rem;
-            padding: 0.1875rem 0.625rem; border-radius: 9999px;
-        }
     </style>
 
-    {{-- ===================== MINI-NAVBAR ===================== --}}
-    <x-page-header
-        heading="System overview and key metrics"
-    >
-        <flux:modal.trigger name="admin-filters">
-            <button
-                type="button"
-                class="relative flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3.5 h-8 sm:h-9 rounded-lg bg-primary text-white border-0 hover:bg-primary-hover dark:bg-secondary dark:text-[var(--color-dark-primary)] dark:hover:bg-secondary-hover transition font-secondary text-xs sm:text-table-row shrink-0"
-            >
-                <flux:icon.funnel class="w-3 h-3 sm:w-3.5 sm:h-3.5 text-white dark:text-[var(--color-dark-primary)]" />
-                <span class="hidden sm:inline">Filters</span>
-                @if ((int) $this->range !== 7)
-                    <span class="flex items-center justify-center w-4 h-4 rounded-full bg-white/20 text-white dark:bg-black/20 dark:text-[var(--color-dark-primary)] text-[10px] font-bold">
-                        1
-                    </span>
-                @endif
-            </button>
-        </flux:modal.trigger>
-    </x-page-header>
+    {{-- ===================== PAGE HEADER ===================== --}}
+    <x-page-header heading="System overview and key metrics" />
 
     {{-- Mobile-visible heading, since the page header above is desktop-only --}}
     <div class="sm:hidden mb-4 pb-4 border-b border-light-bd-default dark:border-dark-bd-default">
@@ -867,103 +92,23 @@ public function todayRevenue()
         </x-heading>
     </div>
 
-    {{-- ===================== FILTERS MODAL ===================== --}}
-    <flux:modal name="admin-filters" class="md:w-96">
-        <div class="space-y-6">
-            <div>
-                <flux:heading size="lg">Filters</flux:heading>
-                <flux:subheading>Narrow down the dashboard data.</flux:subheading>
-            </div>
-            <div class="space-y-4">
-                <flux:select wire:model.live="range" label="Date range">
-                    <flux:select.option value="7">Last 7 days</flux:select.option>
-                    <flux:select.option value="14">Last 14 days</flux:select.option>
-                    <flux:select.option value="30">Last 30 days</flux:select.option>
-                </flux:select>
-            </div>
-            <div class="flex items-center justify-between pt-4 border-t border-light-bd-default dark:border-dark-bd-default">
-                <button
-                    type="button"
-                    wire:click="$set('range', '7')"
-                    class="font-secondary text-table-row text-light-txt-muted dark:text-dark-txt-muted hover:text-light-txt-primary dark:hover:text-dark-txt-primary transition"
-                >
-                    Reset to 7 days
-                </button>
-                <flux:modal.close>
-                    <flux:button variant="primary">Done</flux:button>
-                </flux:modal.close>
-            </div>
-        </div>
-    </flux:modal>
-
-    {{-- ===================== LIVE STATUS STRIP ===================== --}}
-    <div
-        class="mt-6 mb-6 rounded-xl border border-light-bd-default dark:border-dark-bd-default bg-primary text-white overflow-hidden"
-        x-data="{
-            queueing: @js($this->vehiclesQueueingNow),
-            revenue: @js($this->todayRevenue),
-            flipQ: false,
-            flipR: false,
-        }"
-        @status-strip-updated.window="
-            if ($event.detail.queueing !== queueing) { queueing = $event.detail.queueing; flipQ = true; setTimeout(() => flipQ = false, 500); }
-            if ($event.detail.revenue !== revenue) { revenue = $event.detail.revenue; flipR = true; setTimeout(() => flipR = false, 500); }
-        "
-    >
-        <div class="flex flex-col md:flex-row divide-y md:divide-y-0 md:divide-x divide-white/15">
-            <div class="flex items-center justify-between gap-3 px-5 py-4 flex-1">
-                <div class="flex items-center gap-3">
-                    <flux:icon.truck class="w-5 h-5 text-white/70 shrink-0" />
-                    <div>
-                        <div class="font-secondary text-nav-label font-semibold uppercase tracking-wide text-white/80">Now Queueing</div>
-                        <div class="font-primary text-3xl font-extrabold tabular-nums" :class="{ 'flap-flip': flipQ }" x-text="queueing"></div>
-                    </div>
-                </div>
-                <x-dashboard.trend-pill :value="$this->queueingNowTrend" class="!bg-white/15 !text-white" suffix="vs yday" />
-            </div>
-            <div class="flex items-center justify-between gap-3 px-5 py-4 flex-1">
-                <div class="flex items-center gap-3">
-                    <flux:icon.banknotes class="w-5 h-5 text-white/70 shrink-0" />
-                    <div>
-                        <div class="font-secondary text-nav-label font-semibold uppercase tracking-wide text-white/80">Revenue Today</div>
-                        <div class="font-primary text-3xl font-extrabold tabular-nums" :class="{ 'flap-flip': flipR }" x-text="'₱' + Number(revenue).toLocaleString('en-US', { minimumFractionDigits: 2 })"></div>
-                    </div>
-                </div>
-                <x-dashboard.trend-pill :value="$this->revenueTodayTrend" class="!bg-white/15 !text-white" suffix="vs yday" />
-            </div>
-            <div class="flex items-center flex-wrap gap-3 px-5 py-4 flex-1 justify-between">
-                <div class="flex items-center gap-3 min-w-0">
-                    <flux:icon.banknotes class="w-5 h-5 text-white/70 shrink-0" />
-                    <div class="min-w-0">
-                        <div class="font-secondary text-nav-label font-semibold uppercase tracking-wide text-white/80">Total Revenue</div>
-                        <div class="font-primary text-3xl font-extrabold tabular-nums">
-                            ₱{{ number_format($this->totalRevenue, 2) }}
-                        </div>
-                    </div>
-                </div>
-                <x-button href="{{ route('withdraw') }}" variant="primary" color="yellow" class="shrink-0 whitespace-nowrap">Withdraw</x-button>
-            </div>
-        </div>
-    </div>
-
-    {{-- ===================== ZONE: OVERVIEW (3 KPI cards) ===================== --}}
-    <div class="flex items-center gap-2.5 text-light-txt-primary dark:text-dark-txt-primary">
+    {{-- ===================== ZONE: OVERVIEW ===================== --}}
+    <div class="mt-6 flex items-center gap-2.5 text-light-txt-primary dark:text-dark-txt-primary">
         <span class="zone-bar bg-primary dark:bg-dark-txt-primary"></span>
         <span class="font-secondary text-nav-label font-bold uppercase tracking-widest">Overview</span>
     </div>
     <hr class="zone-rule border-light-bd-default dark:border-dark-bd-default">
 
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3 mb-4">
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3 mb-8">
         <flux:card class="p-3 sm:p-4">
             <div class="flex items-center justify-between gap-2">
                 <div class="flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-primary/10 dark:bg-primary/20 shrink-0">
                     <flux:icon.users class="w-4 h-4 sm:w-5 sm:h-5 text-primary dark:text-dark-txt-primary" />
                 </div>
-                <x-dashboard.trend-pill :value="$this->totalUsersTrend" suffix="vs 7d ago" />
             </div>
-            <x-text class="font-secondary text-xs sm:text-stat-label font-medium text-light-txt-body dark:text-dark-txt-body block mt-2.5 sm:mt-3">Total users</x-text>
+            <x-text class="font-secondary text-xs sm:text-stat-label font-medium text-light-txt-body dark:text-dark-txt-body block mt-2.5 sm:mt-3">Total operators</x-text>
             <x-text class="font-primary text-xl sm:text-stat-value font-bold tabular-nums text-light-txt-primary dark:text-dark-txt-primary block mt-0.5">
-                {{ $this->totalUsers }}
+                {{ number_format($this->totalOperators) }}
             </x-text>
         </flux:card>
 
@@ -972,604 +117,85 @@ public function todayRevenue()
                 <div class="flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-info/10 dark:bg-dark-info/20 shrink-0">
                     <flux:icon.truck class="w-4 h-4 sm:w-5 sm:h-5 text-info dark:text-dark-info" />
                 </div>
-                <x-dashboard.trend-pill :value="$this->totalVehiclesTrend" suffix="vs 7d ago" />
             </div>
             <x-text class="font-secondary text-xs sm:text-stat-label font-medium text-light-txt-body dark:text-dark-txt-body block mt-2.5 sm:mt-3">Total vehicles</x-text>
             <x-text class="font-primary text-xl sm:text-stat-value font-bold tabular-nums text-info dark:text-dark-info block mt-0.5">
-                {{ $this->totalVehicles }}
-            </x-text>
-        </flux:card>
-
-        <flux:card class="p-3 sm:p-4">
-            <div class="flex items-center justify-between gap-2">
-                <div class="flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-success/10 dark:bg-dark-success/20 shrink-0">
-                    <flux:icon.calendar-days class="w-4 h-4 sm:w-5 sm:h-5 text-success dark:text-dark-success" />
-                </div>
-                <x-dashboard.trend-pill :value="$this->registeredTodayTrend" suffix="vs yday" />
-            </div>
-            <x-text class="font-secondary text-xs sm:text-stat-label font-medium text-light-txt-body dark:text-dark-txt-body block mt-2.5 sm:mt-3">Registered today</x-text>
-            <x-text class="font-primary text-xl sm:text-stat-value font-bold tabular-nums text-success dark:text-dark-success block mt-0.5">
-                {{ $this->registeredToday }}
-            </x-text>
-        </flux:card>
-
-        <flux:card class="p-3 sm:p-4">
-            <div class="flex items-center justify-between gap-2">
-                <div class="flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-warning/10 dark:bg-dark-warning/20 shrink-0">
-                    <flux:icon.arrow-up-tray class="w-4 h-4 sm:w-5 sm:h-5 text-warning dark:text-dark-warning" />
-                </div>
-                @if ($this->pendingWithdrawals > 0)
-                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] sm:text-xs font-semibold bg-warning/10 text-warning dark:bg-dark-warning/20 dark:text-dark-warning">
-                        {{ $this->pendingWithdrawals }} pending
-                    </span>
-                @endif
-            </div>
-            <x-text class="font-secondary text-xs sm:text-stat-label font-medium text-light-txt-body dark:text-dark-txt-body block mt-2.5 sm:mt-3">Total withdrawn</x-text>
-            <x-text class="font-primary text-xl sm:text-stat-value font-bold tabular-nums text-warning dark:text-dark-warning block mt-0.5">
-                ₱{{ number_format($this->totalWithdrawn, 2) }}
+                {{ number_format($this->totalVehicles) }}
             </x-text>
         </flux:card>
     </div>
 
-    {{-- ===================== CHARTS ROW ===================== --}}
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-8 items-start">
-        {{-- Registrations (span 2) --}}
-        <flux:card class="p-4 lg:col-span-2">
-            <div class="flex items-center justify-between gap-2 mb-2">
-                <x-text class="font-secondary text-sm sm:text-card-title font-semibold text-light-txt-primary dark:text-dark-txt-primary">
-                    Registrations over time
-                </x-text>
-                <x-dashboard.trend-pill :value="$this->registrationsTrend" :suffix="$this->range . 'd'" />
-            </div>
-            <div
-                wire:ignore
-                x-data="lineChart(@js($this->registrationsChart))"
-                @registrations-chart-updated.window="update($event.detail.chart)"
-            >
-                <div class="relative h-68 sm:h-76">
-                    <canvas x-ref="canvas" x-show="!empty"></canvas>
-                    <div x-show="empty" class="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-center px-4">
-                        <flux:icon.chart-bar class="w-6 h-6 text-light-txt-muted dark:text-dark-txt-muted" />
-                        <span class="font-secondary text-xs sm:text-sm text-light-txt-muted dark:text-dark-txt-muted">No data yet</span>
-                    </div>
-                </div>
-            </div>
-        </flux:card>
-
-        {{-- Combined role + commuter charts in one card (span 1) --}}
-        <flux:card class="p-4 lg:col-span-1">
-            <div class="space-y-4">
-                {{-- Role split --}}
-                <div>
-                    <div class="flex items-center justify-between gap-2 mb-1">
-                        <x-text class="font-secondary text-sm font-semibold text-light-txt-primary dark:text-dark-txt-primary">
-                            User role split
-                        </x-text>
-                        <span class="font-secondary text-xs font-medium text-light-txt-muted dark:text-dark-txt-muted">{{ array_sum($this->roleSplit['data']) }} total</span>
-                    </div>
-                    <div
-                        wire:ignore
-                        x-data="donutChart(@js($this->roleSplit))"
-                        @role-chart-updated.window="update($event.detail.chart)"
-                    >
-                        <div class="relative h-28 sm:h-32">
-                            <canvas x-ref="canvas" x-show="!empty"></canvas>
-                            <div x-show="empty" class="absolute inset-0 flex items-center justify-center text-light-txt-muted dark:text-dark-txt-muted text-xs">No data</div>
-                        </div>
-                    </div>
-                </div>
-
-                {{-- Divider --}}
-                <hr class="border-light-bd-default dark:border-dark-bd-default">
-
-                {{-- Commuter type --}}
-                <div>
-                    <div class="flex items-center justify-between gap-2 mb-1">
-                        <x-text class="font-secondary text-sm font-semibold text-light-txt-primary dark:text-dark-txt-primary">
-                            Commuter type
-                        </x-text>
-                        <span class="font-secondary text-xs font-medium text-light-txt-muted dark:text-dark-txt-muted">{{ array_sum($this->commuterTypeSplit['data']) }} total</span>
-                    </div>
-                    <div
-                        wire:ignore
-                        x-data="donutChart(@js($this->commuterTypeSplit))"
-                        @commuter-type-chart-updated.window="update($event.detail.chart)"
-                    >
-                        <div class="relative h-28 sm:h-32">
-                            <canvas x-ref="canvas" x-show="!empty"></canvas>
-                            <div x-show="empty" class="absolute inset-0 flex items-center justify-center text-light-txt-muted dark:text-dark-txt-muted text-xs">No data</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </flux:card>
-    </div>
-
-    {{-- ===================== ZONE: PEAK QUEUEING TIME & COMPLIANCE ===================== --}}
+    {{-- ===================== ZONE: DOCUMENT EXPIRY ===================== --}}
     <div class="flex items-center gap-2.5 text-light-txt-primary dark:text-dark-txt-primary">
-        <span class="zone-bar bg-warning dark:bg-dark-warning"></span>
-        <span class="font-secondary text-nav-label font-bold uppercase tracking-widest">Peak Times &amp; Compliance</span>
+        <span class="zone-bar bg-danger dark:bg-dark-danger"></span>
+        <span class="font-secondary text-nav-label font-bold uppercase tracking-widest">Operator Documents</span>
     </div>
     <hr class="zone-rule border-light-bd-default dark:border-dark-bd-default">
 
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-8">
-        {{-- Peak queueing time by vehicle type --}}
-        <flux:card class="p-4 lg:col-span-2">
-            <div class="flex items-start justify-between gap-2 mb-2 flex-wrap">
-                <div>
-                    <x-text class="font-secondary text-sm sm:text-card-title font-semibold text-light-txt-primary dark:text-dark-txt-primary">
-                        Peak queueing time
-                    </x-text>
-                    @if ($this->peakHour)
-                        <x-text class="font-secondary text-xs text-light-txt-muted dark:text-dark-txt-muted block mt-0.5">
-                            Busiest at <span class="font-semibold text-light-txt-primary dark:text-dark-txt-primary">{{ $this->peakHour['time'] }}</span>
-                            &middot; {{ $this->peakHour['count'] }} vehicles queued
-                        </x-text>
-                    @endif
-                </div>
-                <flux:select wire:model.live="peakVehicleType" size="sm" class="w-full sm:w-36 shrink-0">
-                    <flux:select.option value="all">All types</flux:select.option>
-                    @foreach ($this->vehicleTypeOptions as $type)
-                        <flux:select.option value="{{ $type }}">{{ ucfirst($type) }}</flux:select.option>
-                    @endforeach
-                </flux:select>
+    <flux:card class="p-0 overflow-hidden">
+        <div class="px-4 pt-4 flex flex-wrap items-center justify-between gap-2">
+            <x-text class="font-secondary text-sm sm:text-card-title font-semibold text-light-txt-primary dark:text-dark-txt-primary">
+                Expiring &amp; expired documents
+            </x-text>
+            <div class="flex items-center gap-1.5">
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-badge font-medium bg-danger/10 text-danger dark:bg-dark-danger/15 dark:text-dark-danger">
+                    {{ $this->expiredCount }} expired
+                </span>
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-badge font-medium bg-warning/10 text-warning dark:bg-dark-warning/15 dark:text-dark-warning">
+                    {{ $this->expiringSoonCount }} expiring in 30d
+                </span>
             </div>
-            <div
-                wire:ignore
-                x-data="barChart(@js($this->peakTimeByVehicleType), { label: 'Vehicles queued', colorKey: 'warning' })"
-                @peak-time-chart-updated.window="update($event.detail.chart)"
-            >
-                <div class="relative h-64 sm:h-80">
-                    <canvas x-ref="canvas" x-show="!empty"></canvas>
-                    <div x-show="empty" class="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-center px-4">
-                        <flux:icon.chart-bar class="w-6 h-6 text-light-txt-muted dark:text-dark-txt-muted" />
-                        <span class="font-secondary text-xs sm:text-sm text-light-txt-muted dark:text-dark-txt-muted">No data yet</span>
-                    </div>
-                </div>
-            </div>
-        </flux:card>
+        </div>
 
-        {{-- Operators with expiring franchise validity --}}
-        <flux:card class="p-0 overflow-hidden">
-            <div class="px-4 pt-4 flex items-center justify-between gap-2">
-                <x-text class="font-secondary text-sm sm:text-card-title font-semibold text-light-txt-primary dark:text-dark-txt-primary">
-                    Franchise expiry
-                </x-text>
-                <span class="font-secondary text-xs font-medium text-light-txt-muted dark:text-dark-txt-muted">Next 30 days</span>
-            </div>
-            <div class="mt-2 max-h-[22rem] overflow-y-auto divide-y divide-light-bd-default/60 dark:divide-dark-bd-default/60">
-                @forelse ($this->expiringOperatorDocs as $vehicle)
-                    @php
-                        $docs = collect([
-                            $vehicle->franchise_expiry_date ? ['label' => 'Franchise', 'date' => $vehicle->franchise_expiry_date] : null,
-                        ])->filter()->filter(fn ($d) => today()->addDays(30)->gte($d['date']));
-                    @endphp
-                    <div class="px-4 py-2.5">
-                        <div class="flex items-center justify-between gap-2">
-                            <x-text class="font-secondary text-table-row font-semibold text-light-txt-primary dark:text-dark-txt-primary">
+        <div class="overflow-x-auto mt-2">
+            <table class="w-full font-secondary text-table-row">
+                <thead>
+                    <tr class="text-left text-light-txt-body dark:text-dark-txt-body border-b border-light-bd-default dark:border-dark-bd-default">
+                        <th class="py-2 px-4 font-semibold">Operator</th>
+                        <th class="py-2 px-4 font-semibold hidden sm:table-cell">Contact</th>
+                        <th class="py-2 px-4 font-semibold">Plate</th>
+                        <th class="py-2 px-4 font-semibold">Document</th>
+                        <th class="py-2 px-4 font-semibold hidden md:table-cell">Expiry date</th>
+                        <th class="py-2 px-4 font-semibold text-right">Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @forelse ($this->expiringOperatorDocs as $vehicle)
+                        @php $daysLeft = today()->diffInDays($vehicle->franchise_expiry_date, false); @endphp
+                        <tr class="border-b border-light-bd-default/50 dark:border-dark-bd-default/50 last:border-0">
+                            <td class="py-2.5 px-4 font-semibold text-light-txt-primary dark:text-dark-txt-primary">
                                 {{ $vehicle->user->name ?? 'Unassigned' }}
-                            </x-text>
-                            <span class="font-secondary text-badge text-light-txt-muted dark:text-dark-txt-muted">{{ $vehicle->plate_number }}</span>
-                        </div>
-                        <div class="flex flex-wrap gap-1.5 mt-1">
-                            @foreach ($docs as $doc)
-                                @php $daysLeft = today()->diffInDays($doc['date'], false); @endphp
+                            </td>
+                            <td class="py-2.5 px-4 text-light-txt-muted dark:text-dark-txt-muted hidden sm:table-cell">
+                                {{ $vehicle->user->phone_number ?? '—' }}
+                            </td>
+                            <td class="py-2.5 px-4 text-light-txt-body dark:text-dark-txt-body">
+                                {{ $vehicle->plate_number }}
+                            </td>
+                            <td class="py-2.5 px-4 text-light-txt-body dark:text-dark-txt-body">Franchise</td>
+                            <td class="py-2.5 px-4 text-light-txt-muted dark:text-dark-txt-muted hidden md:table-cell whitespace-nowrap">
+                                {{ $vehicle->franchise_expiry_date->format('M d, Y') }}
+                            </td>
+                            <td class="py-2.5 px-4 text-right whitespace-nowrap">
                                 <span @class([
-                                    'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-badge font-medium',
+                                    'inline-flex items-center px-2 py-0.5 rounded-full text-badge font-medium',
                                     'bg-danger/10 text-danger dark:bg-dark-danger/15 dark:text-dark-danger' => $daysLeft < 0,
                                     'bg-warning/10 text-warning dark:bg-dark-warning/15 dark:text-dark-warning' => $daysLeft >= 0,
                                 ])>
-                                    {{ $doc['label'] }}:
                                     {{ $daysLeft < 0 ? 'Expired ' . abs($daysLeft) . 'd ago' : ($daysLeft === 0 ? 'Expires today' : "Expires in {$daysLeft}d") }}
                                 </span>
-                            @endforeach
-                        </div>
-                    </div>
-                @empty
-                    <div class="py-8 text-center text-light-txt-muted dark:text-dark-txt-muted font-secondary text-table-row">
-                        No franchise expiring soon.
-                    </div>
-                @endforelse
-            </div>
-            <div class="h-2"></div>
-        </flux:card>
-    </div>
-
-    {{-- ===================== ZONE: REVENUE & QUEUEING ===================== --}}
-    <div class="flex items-center gap-2.5 text-light-txt-primary dark:text-dark-txt-primary">
-        <span class="zone-bar bg-success dark:bg-dark-success"></span>
-        <span class="font-secondary text-nav-label font-bold uppercase tracking-widest">Revenue &amp; Queueing</span>
-    </div>
-    <hr class="zone-rule border-light-bd-default dark:border-dark-bd-default">
-
-    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-3 mb-4">
-        <flux:card class="p-3 sm:p-4">
-            <div class="flex items-center justify-between gap-2">
-                <div class="flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-success/10 dark:bg-dark-success/20 shrink-0">
-                    <flux:icon.ticket class="w-4 h-4 sm:w-5 sm:h-5 text-success dark:text-dark-success" />
-                </div>
-                <x-dashboard.trend-pill :value="$this->queueFeeRevenueTrend" suffix="vs yday" />
-            </div>
-            <x-text class="font-secondary text-xs sm:text-stat-label font-medium text-light-txt-body dark:text-dark-txt-body block mt-2.5 sm:mt-3">Queue fees today</x-text>
-            <x-text class="font-primary text-xl sm:text-stat-value font-bold tabular-nums text-success dark:text-dark-success block mt-0.5">
-                ₱{{ number_format($this->queueFeeRevenueToday, 2) }}
-            </x-text>
-        </flux:card>
-
-        <flux:card class="p-3 sm:p-4">
-            <div class="flex items-center justify-between gap-2">
-                <div class="flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-danger/10 dark:bg-dark-danger/20 shrink-0">
-                    <flux:icon.exclamation-triangle class="w-4 h-4 sm:w-5 sm:h-5 text-danger dark:text-dark-danger" />
-                </div>
-                <x-dashboard.trend-pill :value="$this->failedTransactionsTrend" suffix="vs yday" />
-            </div>
-            <x-text class="font-secondary text-xs sm:text-stat-label font-medium text-light-txt-body dark:text-dark-txt-body block mt-2.5 sm:mt-3">Failed transactions today</x-text>
-            <x-text class="font-primary text-xl sm:text-stat-value font-bold tabular-nums text-danger dark:text-dark-danger block mt-0.5">
-                {{ $this->failedTransactionsCount }}
-            </x-text>
-        </flux:card>
-
-        <flux:card class="p-3 sm:p-4">
-            <div class="flex items-center justify-between gap-2">
-                <div class="flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-info/10 dark:bg-dark-info/20 shrink-0">
-                    <flux:icon.credit-card class="w-4 h-4 sm:w-5 sm:h-5 text-info dark:text-dark-info" />
-                </div>
-                <x-dashboard.trend-pill :value="$this->cardAdoptionTrend" suffix="vs 7d ago" />
-            </div>
-            <x-text class="font-secondary text-xs sm:text-stat-label font-medium text-light-txt-body dark:text-dark-txt-body block mt-2.5 sm:mt-3">Card adoption</x-text>
-            <x-text class="font-primary text-xl sm:text-stat-value font-bold tabular-nums text-info dark:text-dark-info block mt-0.5">
-                {{ $this->cardAdoptionRate }}<span class="text-base font-normal opacity-70">%</span>
-            </x-text>
-        </flux:card>
-    </div>
-
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-8 items-start">
-        {{-- Card top-ups by payment method (span 2) — this is TopUpTransaction
-             volume (balance loaded via GCash/PayMongo/cash), not queueing-fee
-             or fare revenue; see the Queue fees / Fares tiles for those. --}}
-        <flux:card class="p-4 lg:col-span-2">
-            <div class="flex items-center justify-between gap-2 mb-2">
-                <x-text class="font-secondary text-sm sm:text-card-title font-semibold text-light-txt-primary dark:text-dark-txt-primary">
-                    Card top-ups by payment method
-                </x-text>
-                <x-dashboard.trend-pill :value="$this->revenueTrend" :suffix="$this->range . 'd'" />
-            </div>
-            <div
-                wire:ignore
-                x-data="barChart(@js($this->revenueByPaymentMethod), { label: 'Revenue (₱)', colorKey: 'success' })"
-                @revenue-chart-updated.window="update($event.detail.chart)"
-            >
-                <div class="relative h-44 sm:h-56">
-                    <canvas x-ref="canvas" x-show="!empty"></canvas>
-                    <div x-show="empty" class="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-center px-4">
-                        <flux:icon.chart-bar class="w-6 h-6 text-light-txt-muted dark:text-dark-txt-muted" />
-                        <span class="font-secondary text-xs sm:text-sm text-light-txt-muted dark:text-dark-txt-muted">No data yet</span>
-                    </div>
-                </div>
-            </div>
-        </flux:card>
-
-        {{-- Queue status (today) --}}
-        <flux:card class="p-4">
-            <div class="flex items-center justify-between gap-2 mb-2">
-                <x-text class="font-secondary text-sm sm:text-card-title font-semibold text-light-txt-primary dark:text-dark-txt-primary">
-                    Queue status (today)
-                </x-text>
-                <span class="font-secondary text-xs font-medium text-light-txt-muted dark:text-dark-txt-muted">{{ array_sum($this->queueStatusBreakdown['data']) }} today</span>
-            </div>
-            <div
-                wire:ignore
-                x-data="donutChart(@js($this->queueStatusBreakdown))"
-                @queue-status-chart-updated.window="update($event.detail.chart)"
-            >
-                <div class="relative h-44 sm:h-56">
-                    <canvas x-ref="canvas" x-show="!empty"></canvas>
-                    <div x-show="empty" class="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-center px-4">
-                        <flux:icon.chart-pie class="w-6 h-6 text-light-txt-muted dark:text-dark-txt-muted" />
-                        <span class="font-secondary text-xs sm:text-sm text-light-txt-muted dark:text-dark-txt-muted">No data yet</span>
-                    </div>
-                </div>
-            </div>
-        </flux:card>
-
-        {{-- NEW: Queue payment mode split --}}
-        <flux:card class="p-4">
-            <div class="flex items-center justify-between gap-2 mb-2">
-                <x-text class="font-secondary text-sm sm:text-card-title font-semibold text-light-txt-primary dark:text-dark-txt-primary">
-                    Queue payment mode
-                </x-text>
-                <span class="font-secondary text-xs font-medium text-light-txt-muted dark:text-dark-txt-muted">Today</span>
-            </div>
-            <div
-                wire:ignore
-                x-data="donutChart(@js($this->queuePaymentModeSplit))"
-                @queue-payment-mode-updated.window="update($event.detail.chart)"
-            >
-                <div class="relative h-44 sm:h-56">
-                    <canvas x-ref="canvas" x-show="!empty"></canvas>
-                    <div x-show="empty" class="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-center px-4">
-                        <flux:icon.chart-pie class="w-6 h-6 text-light-txt-muted dark:text-dark-txt-muted" />
-                        <span class="font-secondary text-xs sm:text-sm text-light-txt-muted dark:text-dark-txt-muted">No data yet</span>
-                    </div>
-                </div>
-            </div>
-        </flux:card>
-
-        {{-- Queue volume by vehicle type (span 2, sits beside Queue payment mode) --}}
-        <flux:card class="p-4 lg:col-span-2">
-            <div class="flex items-center justify-between gap-2 mb-2">
-                <x-text class="font-secondary text-sm sm:text-card-title font-semibold text-light-txt-primary dark:text-dark-txt-primary">
-                    Queue volume by vehicle type
-                </x-text>
-                <x-dashboard.trend-pill :value="$this->queueVolumeTrend" :suffix="$this->range . 'd'" />
-            </div>
-            <div
-                wire:ignore
-                x-data="barChart(@js($this->queueVolumeByVehicleType), { label: 'Vehicles queued', colorKey: 'primary' })"
-                @queue-volume-chart-updated.window="update($event.detail.chart)"
-            >
-                <div class="relative h-44 sm:h-56">
-                    <canvas x-ref="canvas" x-show="!empty"></canvas>
-                    <div x-show="empty" class="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-center px-4">
-                        <flux:icon.chart-bar class="w-6 h-6 text-light-txt-muted dark:text-dark-txt-muted" />
-                        <span class="font-secondary text-xs sm:text-sm text-light-txt-muted dark:text-dark-txt-muted">No data yet</span>
-                    </div>
-                </div>
-            </div>
-        </flux:card>
-    </div>
-
-    <div class="flex items-center gap-2.5 text-light-txt-primary dark:text-dark-txt-primary">
-        <span class="zone-bar bg-danger dark:bg-dark-danger"></span>
-        <span class="font-secondary text-nav-label font-bold uppercase tracking-widest">Fares &amp; Trips</span>
-    </div>
-    <hr class="zone-rule border-light-bd-default dark:border-dark-bd-default">
-
-    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3 mb-4">
-        <flux:card class="p-3 sm:p-4">
-            <div class="flex items-center justify-between gap-2">
-                <div class="flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-danger/10 dark:bg-dark-danger/20 shrink-0">
-                    <flux:icon.users class="w-4 h-4 sm:w-5 sm:h-5 text-danger dark:text-dark-danger" />
-                </div>
-                <x-dashboard.trend-pill :value="$this->tripsTodayTrend" suffix="vs yday" />
-            </div>
-            <x-text class="font-secondary text-xs sm:text-stat-label font-medium text-light-txt-body dark:text-dark-txt-body block mt-2.5 sm:mt-3">Trips boarded today</x-text>
-            <x-text class="font-primary text-xl sm:text-stat-value font-bold tabular-nums text-danger dark:text-dark-danger block mt-0.5">
-                {{ $this->tripsToday }}
-            </x-text>
-        </flux:card>
-
-        <flux:card class="p-3 sm:p-4">
-            <div class="flex items-center justify-between gap-2">
-                <div class="flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-danger/10 dark:bg-dark-danger/20 shrink-0">
-                    <flux:icon.banknotes class="w-4 h-4 sm:w-5 sm:h-5 text-danger dark:text-dark-danger" />
-                </div>
-                <x-dashboard.trend-pill :value="$this->faresCollectedTrend" suffix="vs yday" />
-            </div>
-            <x-text class="font-secondary text-xs sm:text-stat-label font-medium text-light-txt-body dark:text-dark-txt-body block mt-2.5 sm:mt-3">Fares collected today</x-text>
-            <x-text class="font-primary text-xl sm:text-stat-value font-bold tabular-nums text-danger dark:text-dark-danger block mt-0.5">
-                ₱{{ number_format($this->faresCollectedToday, 2) }}
-            </x-text>
-        </flux:card>
-    </div>
-
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-8">
-        <flux:card class="p-4">
-            <div class="flex items-center justify-between gap-2 mb-2">
-                <x-text class="font-secondary text-sm sm:text-card-title font-semibold text-light-txt-primary dark:text-dark-txt-primary">
-                    Fare payment mode
-                </x-text>
-                <span class="font-secondary text-xs font-medium text-light-txt-muted dark:text-dark-txt-muted">Today</span>
-            </div>
-            <div
-                wire:ignore
-                x-data="donutChart(@js($this->farePaymentModeSplit))"
-                @fare-payment-mode-updated.window="update($event.detail.chart)"
-            >
-                <div class="relative h-44 sm:h-56">
-                    <canvas x-ref="canvas" x-show="!empty"></canvas>
-                    <div x-show="empty" class="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-center px-4">
-                        <flux:icon.chart-pie class="w-6 h-6 text-light-txt-muted dark:text-dark-txt-muted" />
-                        <span class="font-secondary text-xs sm:text-sm text-light-txt-muted dark:text-dark-txt-muted">No data yet</span>
-                    </div>
-                </div>
-            </div>
-        </flux:card>
-
-        <flux:card class="p-4 lg:col-span-2">
-            <div class="flex items-center justify-between gap-2 mb-2">
-                <x-text class="font-secondary text-sm sm:text-card-title font-semibold text-light-txt-primary dark:text-dark-txt-primary">
-                    Trips by destination
-                </x-text>
-                <x-dashboard.trend-pill :value="$this->tripsByDestinationTrend" :suffix="$this->range . 'd'" />
-            </div>
-            <div
-                wire:ignore
-                x-data="barChart(@js($this->tripsByDestination), { label: 'Trips', colorKey: 'danger' })"
-                @trips-destination-chart-updated.window="update($event.detail.chart)"
-            >
-                <div class="relative h-44 sm:h-56">
-                    <canvas x-ref="canvas" x-show="!empty"></canvas>
-                    <div x-show="empty" class="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-center px-4">
-                        <flux:icon.chart-bar class="w-6 h-6 text-light-txt-muted dark:text-dark-txt-muted" />
-                        <span class="font-secondary text-xs sm:text-sm text-light-txt-muted dark:text-dark-txt-muted">No data yet</span>
-                    </div>
-                </div>
-            </div>
-        </flux:card>
-    </div>
-
-    {{-- ===================== ZONE: RENTING & FEED ===================== --}}
-    <div class="flex items-center gap-2.5 text-light-txt-primary dark:text-dark-txt-primary">
-        <span class="zone-bar bg-secondary"></span>
-        <span class="font-secondary text-nav-label font-bold uppercase tracking-widest">Renting &amp; Feed Activity</span>
-    </div>
-    <hr class="zone-rule border-light-bd-default dark:border-dark-bd-default">
-
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-8">
-        <flux:card class="p-4">
-            <div class="flex items-center justify-between gap-2 mb-2">
-                <x-text class="font-secondary text-sm sm:text-card-title font-semibold text-light-txt-primary dark:text-dark-txt-primary">
-                    Posts by role <span class="opacity-60">(rentals)</span>
-                </x-text>
-                <x-dashboard.trend-pill :value="$this->postsTrend" :suffix="$this->range . 'd'" />
-            </div>
-            <div
-                wire:ignore
-                x-data="donutChart(@js($this->postsByRole))"
-                @posts-by-role-chart-updated.window="update($event.detail.chart)"
-            >
-                <div class="relative h-44 sm:h-56">
-                    <canvas x-ref="canvas" x-show="!empty"></canvas>
-                    <div x-show="empty" class="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-center px-4">
-                        <flux:icon.chart-pie class="w-6 h-6 text-light-txt-muted dark:text-dark-txt-muted" />
-                        <span class="font-secondary text-xs sm:text-sm text-light-txt-muted dark:text-dark-txt-muted">No data yet</span>
-                    </div>
-                </div>
-            </div>
-        </flux:card>
-
-        <flux:card class="p-4">
-            <div class="flex items-center justify-between gap-2 mb-2">
-                <x-text class="font-secondary text-sm sm:text-card-title font-semibold text-light-txt-primary dark:text-dark-txt-primary">
-                    Rent transaction funnel
-                </x-text>
-                <span class="font-secondary text-xs font-medium text-light-txt-muted dark:text-dark-txt-muted">{{ array_sum($this->rentTransactionFunnel['data']) }} total</span>
-            </div>
-            <div
-                wire:ignore
-                x-data="donutChart(@js($this->rentTransactionFunnel))"
-                @rent-funnel-chart-updated.window="update($event.detail.chart)"
-            >
-                <div class="relative h-44 sm:h-56">
-                    <canvas x-ref="canvas" x-show="!empty"></canvas>
-                    <div x-show="empty" class="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-center px-4">
-                        <flux:icon.chart-pie class="w-6 h-6 text-light-txt-muted dark:text-dark-txt-muted" />
-                        <span class="font-secondary text-xs sm:text-sm text-light-txt-muted dark:text-dark-txt-muted">No data yet</span>
-                    </div>
-                </div>
-            </div>
-        </flux:card>
-
-        <flux:card class="p-4">
-            <div class="flex items-center justify-between gap-2 mb-2">
-                <x-text class="font-secondary text-sm sm:text-card-title font-semibold text-light-txt-primary dark:text-dark-txt-primary">
-                    Trip request status
-                </x-text>
-                <span class="font-secondary text-xs font-medium text-light-txt-muted dark:text-dark-txt-muted">{{ array_sum($this->tripRequestStatusSplit['data']) }} total</span>
-            </div>
-            <div
-                wire:ignore
-                x-data="donutChart(@js($this->tripRequestStatusSplit))"
-                @trip-request-chart-updated.window="update($event.detail.chart)"
-            >
-                <div class="relative h-44 sm:h-56">
-                    <canvas x-ref="canvas" x-show="!empty"></canvas>
-                    <div x-show="empty" class="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-center px-4">
-                        <flux:icon.chart-pie class="w-6 h-6 text-light-txt-muted dark:text-dark-txt-muted" />
-                        <span class="font-secondary text-xs sm:text-sm text-light-txt-muted dark:text-dark-txt-muted">No data yet</span>
-                    </div>
-                </div>
-            </div>
-        </flux:card>
-    </div>
-
-    {{-- ===================== ZONE: CARDS & AUDIT ===================== --}}
-    <div class="flex items-center gap-2.5 text-light-txt-primary dark:text-dark-txt-primary">
-        <span class="zone-bar bg-info dark:bg-dark-info"></span>
-        <span class="font-secondary text-nav-label font-bold uppercase tracking-widest">Cards &amp; Audit</span>
-    </div>
-    <hr class="zone-rule border-light-bd-default dark:border-dark-bd-default">
-
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-3">
-        <flux:card class="p-4">
-            <div class="flex items-center justify-between gap-2 mb-2">
-                <x-text class="font-secondary text-sm sm:text-card-title font-semibold text-light-txt-primary dark:text-dark-txt-primary">
-                    Cards by status
-                </x-text>
-                <span class="font-secondary text-xs font-medium text-light-txt-muted dark:text-dark-txt-muted">{{ array_sum($this->cardsByStatus['data']) }} total</span>
-            </div>
-            <div
-                wire:ignore
-                x-data="donutChart(@js($this->cardsByStatus))"
-                @cards-status-chart-updated.window="update($event.detail.chart)"
-            >
-                <div class="relative h-44 sm:h-56">
-                    <canvas x-ref="canvas" x-show="!empty"></canvas>
-                    <div x-show="empty" class="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-center px-4">
-                        <flux:icon.chart-pie class="w-6 h-6 text-light-txt-muted dark:text-dark-txt-muted" />
-                        <span class="font-secondary text-xs sm:text-sm text-light-txt-muted dark:text-dark-txt-muted">No data yet</span>
-                    </div>
-                </div>
-            </div>
-        </flux:card>
-
-        <flux:card class="p-4 lg:col-span-2">
-            <div class="flex items-center justify-between gap-2 mb-2">
-                <x-text class="font-secondary text-sm sm:text-card-title font-semibold text-light-txt-primary dark:text-dark-txt-primary">
-                    Audit action volume
-                </x-text>
-                <x-dashboard.trend-pill :value="$this->auditTrend" :suffix="$this->range . 'd'" />
-            </div>
-            <div
-                wire:ignore
-                x-data="barChart(@js($this->auditActionVolume), { label: 'Actions', colorKey: 'secondary' })"
-                @audit-action-chart-updated.window="update($event.detail.chart)"
-            >
-                <div class="relative h-44 sm:h-56">
-                    <canvas x-ref="canvas" x-show="!empty"></canvas>
-                    <div x-show="empty" class="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-center px-4">
-                        <flux:icon.chart-bar class="w-6 h-6 text-light-txt-muted dark:text-dark-txt-muted" />
-                        <span class="font-secondary text-xs sm:text-sm text-light-txt-muted dark:text-dark-txt-muted">No data yet</span>
-                    </div>
-                </div>
-            </div>
-        </flux:card>
-
-        {{-- Recent audit entries table (latest 5) --}}
-        <flux:card class="p-0 lg:col-span-3 overflow-hidden">
-            <div class="px-4 pt-4">
-                <x-text class="font-secondary text-sm sm:text-card-title font-semibold text-light-txt-primary dark:text-dark-txt-primary">
-                    Recent audit entries
-                </x-text>
-            </div>
-            <div class="overflow-x-auto mt-2">
-                <table class="w-full font-secondary text-table-row">
-                    <thead>
-                        <tr class="text-left text-light-txt-body dark:text-dark-txt-body border-b border-light-bd-default dark:border-dark-bd-default">
-                            <th class="py-2 px-4 font-semibold">User</th>
-                            <th class="py-2 px-4 font-semibold">Action</th>
-                            <th class="py-2 px-4 font-semibold hidden sm:table-cell">Subject</th>
-                            <th class="py-2 px-4 font-semibold hidden md:table-cell">Channel</th>
-                            <th class="py-2 px-4 font-semibold text-right">When</th>
+                            </td>
                         </tr>
-                    </thead>
-                    <tbody>
-                        @forelse ($this->recentAuditEntries as $entry)
-                            <tr class="border-b border-light-bd-default/50 dark:border-dark-bd-default/50 last:border-0">
-                                <td class="py-2.5 px-4 text-light-txt-body dark:text-dark-txt-body">{{ $entry->user->name ?? 'System' }}</td>
-                                <td class="py-2.5 px-4">
-                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-badge font-medium bg-light-subtle dark:bg-dark-subtle text-light-txt-primary dark:text-dark-txt-primary">
-                                        {{ $entry->action }}
-                                    </span>
-                                </td>
-                                <td class="py-2.5 px-4 text-light-txt-muted dark:text-dark-txt-muted hidden sm:table-cell">{{ $entry->subject }}</td>
-                                <td class="py-2.5 px-4 text-light-txt-muted dark:text-dark-txt-muted hidden md:table-cell">{{ $entry->channel }}</td>
-                                <td class="py-2.5 px-4 text-right font-secondary text-timestamp tabular-nums text-light-txt-muted dark:text-dark-txt-muted whitespace-nowrap">
-                                    {{ $entry->created_at->diffForHumans() }}
-                                </td>
-                            </tr>
-                        @empty
-                            <tr>
-                                <td colspan="5" class="py-8 text-center text-light-txt-muted dark:text-dark-txt-muted">
-                                    No recent audit entries.
-                                </td>
-                            </tr>
-                        @endforelse
-                    </tbody>
-                </table>
-            </div>
-            <div class="h-1"></div>
-        </flux:card>
-    </div>
+                    @empty
+                        <tr>
+                            <td colspan="6" class="py-8 text-center text-light-txt-muted dark:text-dark-txt-muted">
+                                No documents expiring or expired.
+                            </td>
+                        </tr>
+                    @endforelse
+                </tbody>
+            </table>
+        </div>
+        <div class="h-2"></div>
+    </flux:card>
 </div>
